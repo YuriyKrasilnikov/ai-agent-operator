@@ -1,0 +1,48 @@
+[package]
+name = "ai-agent-operator"
+version = "0.1.0"
+description = "Local durable MCP operator for exact Claude Opus review sessions"
+edition = "2024"
+rust-version = "1.98"
+license = "Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/YuriyKrasilnikov/ai-agent-operator"
+publish = false
+
+[lib]
+name = "aiop"
+path = "src/lib.rs"
+
+[[bin]]
+name = "aiopd"
+path = "src/bin/aiopd.rs"
+
+[[bin]]
+name = "aiop-mcp"
+path = "src/bin/aiop-mcp.rs"
+
+[[bin]]
+name = "aiop-fake-claude"
+path = "src/bin/aiop-fake-claude.rs"
+
+[dependencies]
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.150"
+rmcp = { version = "=3.1.4", default-features = false, features = ["server", "transport-io"] }
+rustix = { version = "=1.1.4", features = ["event"] }
+schemars = "=1.2.1"
+sha2 = "=0.10.9"
+sqlite = { version = "=0.32.0", features = ["bundled"] }
+thiserror = "=2.0.20"
+uuid = { version = "=1.23.4", features = ["serde", "v4"] }
+tokio = { version = "=1.53.1", features = ["macros", "rt-multi-thread"] }
+
+[dev-dependencies]
+tempfile = "=3.27.0"
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+all = "deny"
+unwrap_used = "deny"
