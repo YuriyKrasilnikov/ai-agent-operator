@@ -30,6 +30,7 @@ impl Adapter {
             "CREATE TABLE IF NOT EXISTS projects (project_id TEXT PRIMARY KEY NOT NULL, record_json TEXT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS operations (request_id TEXT PRIMARY KEY NOT NULL, operation_id TEXT UNIQUE NOT NULL, session_id TEXT NOT NULL, fingerprint TEXT NOT NULL, record_json TEXT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS active_sessions (session_id TEXT PRIMARY KEY NOT NULL, operation_id TEXT UNIQUE NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS initiator_bindings (project_id TEXT NOT NULL, initiator_session_id TEXT NOT NULL, initiator_agent_id TEXT NOT NULL, role_id TEXT NOT NULL, task_id TEXT NOT NULL, subject_id TEXT NOT NULL, target_session_id TEXT NOT NULL, record_json TEXT NOT NULL, PRIMARY KEY (project_id, initiator_session_id, initiator_agent_id, role_id, task_id, subject_id))",
         ] {
             connection.execute(schema).map_err(sql_error)?;
         }

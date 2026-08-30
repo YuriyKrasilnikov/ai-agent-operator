@@ -10,9 +10,12 @@ use std::sync::Arc;
 pub mod ingress;
 
 mod admission;
+mod initiator_binding;
 mod operation;
 mod project;
 mod runtime;
+mod session_decision;
+mod session_inventory;
 mod session_writer;
 
 pub use operation::OperationControl;
@@ -56,6 +59,20 @@ impl OperationControl {
             DaemonRequest::OperationCancel { operation_id } => {
                 Ok(DaemonResponse::Operation(self.cancel(operation_id)?))
             }
+            DaemonRequest::SessionInventory(request) => Ok(DaemonResponse::SessionInventory(
+                session_inventory::inventory(self.state.as_ref(), request)?,
+            )),
+            DaemonRequest::SessionInspect(request) => Ok(DaemonResponse::SessionEvidence(
+                session_inventory::inspect(self.state.as_ref(), request)?,
+            )),
+            DaemonRequest::InitiatorBindingRegister(request) => {
+                Ok(DaemonResponse::BindingRegistration(
+                    initiator_binding::register(self.state.as_ref(), request)?,
+                ))
+            }
+            DaemonRequest::SessionDecide(request) => Ok(DaemonResponse::SessionDecision(
+                session_decision::decide(self.state.as_ref(), request)?,
+            )),
         }
     }
 }

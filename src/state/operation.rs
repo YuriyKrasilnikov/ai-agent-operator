@@ -14,6 +14,19 @@ use ::sqlite::{ConnectionThreadSafe, State};
 pub(crate) fn get(a: &Adapter, id: OperationId) -> Result<Operation, OperatorError> {
     a.read(|c| by_id(c, id)?.ok_or_else(|| OperatorError::UnknownOperation(id.value().to_string())))
 }
+pub(crate) fn list_session_evidence(
+    a: &Adapter,
+    project_id: &crate::contract::control::ProjectId,
+) -> Result<Vec<crate::contract::control::SessionEvidence>, OperatorError> {
+    a.read(|connection| evidence_for_project(connection, project_id, None))
+}
+pub(crate) fn inspect_session_evidence(
+    a: &Adapter,
+    project_id: &crate::contract::control::ProjectId,
+    target_session_id: SessionId,
+) -> Result<Vec<crate::contract::control::SessionEvidence>, OperatorError> {
+    a.read(|connection| evidence_for_project(connection, project_id, Some(target_session_id)))
+}
 pub(crate) fn persist_admission(
     a: &Adapter,
     r: &OperationStart,
@@ -201,4 +214,44 @@ fn allowed(c: OperationState, n: OperationState) -> bool {
         | OperationState::Cancelled
         | OperationState::Indeterminate => false,
     }
+}
+
+fn evidence_for_project(
+    connection: &ConnectionThreadSafe,
+    project_id: &crate::contract::control::ProjectId,
+    target_session_id: Option<SessionId>,
+) -> Result<Vec<crate::contract::control::SessionEvidence>, OperatorError> {
+    let mut statement = connection
+        .prepare("SELECT record_json FROM operations")
+        .map_err(sql_error)?;
+    let mut evidence = Vec::new();
+    while let State::Row = statement.next().map_err(sql_error)? {
+        let operation: Operation = decode(statement.read::<String, _>(0).map_err(sql_error)?)?;
+        if operation.project_id != *project_id || operation.state != OperationState::Succeeded {
+            continue;
+        }
+        let (Some(observed_session_id), Some(observed_model), Some(TerminalOutcome::Succeeded(_))) = (
+            operation.observed_session_id,
+            operation.observed_model,
+            operation.terminal_outcome,
+        ) else {
+            continue;
+        };
+        if observed_session_id != operation.session_id {
+            continue;
+        }
+        if let Some(required_session_id) = target_session_id
+            && observed_session_id != required_session_id
+        {
+            continue;
+        }
+        evidence.push(crate::contract::control::SessionEvidence {
+            operation_id: operation.operation_id,
+            target_session_id: observed_session_id,
+            observed_model,
+            observed_claude_version: operation.observed_claude_version,
+        });
+    }
+    evidence.sort_by_key(|item| item.operation_id.value());
+    Ok(evidence)
 }

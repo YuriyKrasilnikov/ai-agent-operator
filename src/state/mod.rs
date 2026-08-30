@@ -1,8 +1,9 @@
 // Copyright 2026 Yuriy Krasilnikov
 // SPDX-License-Identifier: Apache-2.0
 
-//! SQLite State composition; SQL behavior is owned by SS01–SS04 modules.
+//! SQLite State composition for project, operation, claim, and binding records.
 
+mod initiator_binding;
 mod operation;
 mod ownership;
 mod project;
@@ -12,8 +13,10 @@ mod sqlite;
 use std::path::Path;
 
 use crate::contract::control::{
-    Operation, OperationAdmission, OperationId, OperationStart, OperationState, OperatorError,
-    ProjectId, ProjectRegistration, SessionId, StatePort, TerminalOutcome,
+    BindingPersistence, InitiatorAgentIdentity, InitiatorBinding, InitiatorIdentity,
+    InitiatorSessionIdentity, Operation, OperationAdmission, OperationId, OperationStart,
+    OperationState, OperatorError, ProjectId, ProjectRegistration, SessionEvidence, SessionId,
+    StatePort, TerminalOutcome,
 };
 
 #[derive(Clone)]
@@ -76,5 +79,44 @@ impl StatePort for SqliteState {
     }
     fn recover_current_daemon_incomplete(&self) -> Result<(), OperatorError> {
         operation::recover(&self.adapter)
+    }
+    fn list_session_evidence(
+        &self,
+        project_id: &ProjectId,
+    ) -> Result<Vec<SessionEvidence>, OperatorError> {
+        operation::list_session_evidence(&self.adapter, project_id)
+    }
+    fn inspect_session_evidence(
+        &self,
+        project_id: &ProjectId,
+        target_session_id: SessionId,
+    ) -> Result<Vec<SessionEvidence>, OperatorError> {
+        operation::inspect_session_evidence(&self.adapter, project_id, target_session_id)
+    }
+    fn persist_initiator_binding(
+        &self,
+        binding: &InitiatorBinding,
+    ) -> Result<BindingPersistence, OperatorError> {
+        initiator_binding::persist(&self.adapter, binding)
+    }
+    fn get_initiator_binding(
+        &self,
+        project_id: &ProjectId,
+        identity: &InitiatorIdentity,
+    ) -> Result<Option<InitiatorBinding>, OperatorError> {
+        initiator_binding::get(&self.adapter, project_id, identity)
+    }
+    fn list_initiator_bindings_for_initiator(
+        &self,
+        project_id: &ProjectId,
+        initiator_session_id: &InitiatorSessionIdentity,
+        initiator_agent_id: &InitiatorAgentIdentity,
+    ) -> Result<Vec<InitiatorBinding>, OperatorError> {
+        initiator_binding::list_for_initiator(
+            &self.adapter,
+            project_id,
+            initiator_session_id,
+            initiator_agent_id,
+        )
     }
 }

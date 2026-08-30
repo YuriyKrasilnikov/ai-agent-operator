@@ -24,7 +24,7 @@ use crate::contract::control::{
     ReviewProfile, SessionId,
 };
 
-use super::client;
+use super::{GatewayError, client, session};
 
 #[derive(Clone)]
 pub struct McpGateway {
@@ -60,7 +60,10 @@ impl ServerHandler for McpGateway {
         let result = tokio::task::spawn_blocking(move || dispatch(&endpoint, request)).await;
         match result {
             Ok(result) => Ok(result.into()),
-            Err(error) => Ok(tool_error(format!("gateway worker failed: {error}")).into()),
+            Err(error) => Ok(tool_error(GatewayError::failure(format!(
+                "gateway worker failed: {error}"
+            )))
+            .into()),
         }
     }
 }
@@ -83,6 +86,22 @@ fn tools() -> Result<ListToolsResult, rmcp::ErrorData> {
             tool::<OperationCancelInput>(
                 "operation_cancel",
                 "Request direct-child cancellation and observe its terminal state.",
+            )?,
+            tool::<session::SessionInventoryInput>(
+                "session_inventory",
+                "List successful operator-owned target-session evidence.",
+            )?,
+            tool::<session::SessionInspectInput>(
+                "session_inspect",
+                "Inspect qualifying evidence for one exact target session.",
+            )?,
+            tool::<session::InitiatorBindingRegisterInput>(
+                "initiator_binding_register",
+                "Bind one explicit initiator identity to one evidenced target session.",
+            )?,
+            tool::<session::SessionDecideInput>(
+                "session_decide",
+                "Return a pure exact-session continuation decision.",
             )?,
         ],
         ..ListToolsResult::default()
@@ -111,30 +130,49 @@ fn dispatch(endpoint: &std::path::Path, request: CallToolRequestParams) -> CallT
         "operation_cancel" => {
             decode::<OperationCancelInput>(&request.arguments).and_then(cancel_operation)
         }
-        _ => return tool_error("unknown aiop tool".to_owned()),
+        "session_inventory" => decode::<session::SessionInventoryInput>(&request.arguments)
+            .and_then(session::inventory),
+        "session_inspect" => {
+            decode::<session::SessionInspectInput>(&request.arguments).and_then(session::inspect)
+        }
+        "initiator_binding_register" => {
+            decode::<session::InitiatorBindingRegisterInput>(&request.arguments)
+                .and_then(session::register)
+        }
+        "session_decide" => {
+            decode::<session::SessionDecideInput>(&request.arguments).and_then(session::decide)
+        }
+        _ => return tool_error(GatewayError::invalid("unknown aiop tool".to_owned())),
     };
     match request_result
-        .and_then(|request| client::call(endpoint, request).map_err(|error| error.to_string()))
+        .and_then(|request| client::call(endpoint, request).map_err(GatewayError::operator))
     {
         Ok(response) => match serde_json::to_string(&response) {
             Ok(value) => CallToolResult::success(vec![ContentBlock::text(value)]),
-            Err(error) => tool_error(format!("operator response could not be encoded: {error}")),
+            Err(error) => tool_error(GatewayError::failure(format!(
+                "operator response could not be encoded: {error}"
+            ))),
         },
-        Err(error) => tool_error(error.to_string()),
+        Err(error) => tool_error(error),
     }
 }
 
 fn decode<T: for<'de> Deserialize<'de>>(
     arguments: &Option<rmcp::model::JsonObject>,
-) -> Result<T, String> {
+) -> Result<T, GatewayError> {
     let value = match arguments {
         Some(arguments) => Value::Object(arguments.clone()),
-        None => return Err("tool arguments are required".to_owned()),
+        None => {
+            return Err(GatewayError::invalid(
+                "tool arguments are required".to_owned(),
+            ));
+        }
     };
-    serde_json::from_value(value).map_err(|error| format!("tool arguments were invalid: {error}"))
+    serde_json::from_value(value)
+        .map_err(|error| GatewayError::invalid(format!("tool arguments were invalid: {error}")))
 }
 
-fn register(input: ProjectRegisterInput) -> Result<DaemonRequest, String> {
+fn register(input: ProjectRegisterInput) -> Result<DaemonRequest, GatewayError> {
     Ok(DaemonRequest::ProjectRegister(ProjectRegistration {
         project_id: project_id(input.project_id)?,
         working_directory: input.working_directory.into(),
@@ -142,12 +180,12 @@ fn register(input: ProjectRegisterInput) -> Result<DaemonRequest, String> {
         expected_opus_model: input.expected_opus_model,
     }))
 }
-fn get_project(input: ProjectGetInput) -> Result<DaemonRequest, String> {
+fn get_project(input: ProjectGetInput) -> Result<DaemonRequest, GatewayError> {
     Ok(DaemonRequest::ProjectGet {
         project_id: project_id(input.project_id)?,
     })
 }
-fn get_operation(input: OperationGetInput) -> Result<DaemonRequest, String> {
+fn get_operation(input: OperationGetInput) -> Result<DaemonRequest, GatewayError> {
     Ok(DaemonRequest::OperationGet {
         operation_id: crate::contract::control::OperationId::new_exact(parse_uuid(
             &input.operation_id,
@@ -155,7 +193,7 @@ fn get_operation(input: OperationGetInput) -> Result<DaemonRequest, String> {
         )?),
     })
 }
-fn wait_operation(input: OperationWaitInput) -> Result<DaemonRequest, String> {
+fn wait_operation(input: OperationWaitInput) -> Result<DaemonRequest, GatewayError> {
     Ok(DaemonRequest::OperationWait {
         operation_id: crate::contract::control::OperationId::new_exact(parse_uuid(
             &input.operation_id,
@@ -164,7 +202,7 @@ fn wait_operation(input: OperationWaitInput) -> Result<DaemonRequest, String> {
         wait_millis: input.wait_millis,
     })
 }
-fn cancel_operation(input: OperationCancelInput) -> Result<DaemonRequest, String> {
+fn cancel_operation(input: OperationCancelInput) -> Result<DaemonRequest, GatewayError> {
     Ok(DaemonRequest::OperationCancel {
         operation_id: crate::contract::control::OperationId::new_exact(parse_uuid(
             &input.operation_id,
@@ -172,7 +210,7 @@ fn cancel_operation(input: OperationCancelInput) -> Result<DaemonRequest, String
         )?),
     })
 }
-fn start(input: OperationStartInput) -> Result<DaemonRequest, String> {
+fn start(input: OperationStartInput) -> Result<DaemonRequest, GatewayError> {
     let intent = match input.intent {
         McpIntent::New => OperationIntent::New,
         McpIntent::ResumeExact { session_id } => OperationIntent::ResumeExact {
@@ -187,28 +225,31 @@ fn start(input: OperationStartInput) -> Result<DaemonRequest, String> {
         review_profile: review_profile(input.review_profile)?,
     }))
 }
-fn parse_uuid(value: &str, field: &str) -> Result<Uuid, String> {
+fn parse_uuid(value: &str, field: &str) -> Result<Uuid, GatewayError> {
     value
         .parse()
-        .map_err(|error| format!("{field} was not a UUID: {error}"))
+        .map_err(|error| GatewayError::invalid(format!("{field} was not a UUID: {error}")))
 }
-fn project_id(value: String) -> Result<ProjectId, String> {
-    ProjectId::new(value).map_err(|error| error.to_string())
+fn project_id(value: String) -> Result<ProjectId, GatewayError> {
+    ProjectId::new(value).map_err(|error| GatewayError::invalid(error.to_string()))
 }
-fn review_profile(value: McpReviewProfile) -> Result<ReviewProfile, String> {
+fn review_profile(value: McpReviewProfile) -> Result<ReviewProfile, GatewayError> {
     match value {
         McpReviewProfile::OpusReadOnly => Ok(ReviewProfile::OpusReadOnly),
     }
 }
-fn empty(arguments: &Option<rmcp::model::JsonObject>) -> Result<(), String> {
+fn empty(arguments: &Option<rmcp::model::JsonObject>) -> Result<(), GatewayError> {
     match arguments {
         None => Ok(()),
         Some(arguments) if arguments.is_empty() => Ok(()),
-        Some(_) => Err("project_list does not accept arguments".to_owned()),
+        Some(_) => Err(GatewayError::invalid(
+            "project_list does not accept arguments".to_owned(),
+        )),
     }
 }
-fn tool_error(message: String) -> CallToolResult {
-    CallToolResult::error(vec![ContentBlock::text(message)])
+fn tool_error(error: GatewayError) -> CallToolResult {
+    let encoded = serde_json::to_string(&error).expect("gateway errors contain only JSON values");
+    CallToolResult::error(vec![ContentBlock::text(encoded)])
 }
 
 #[derive(Deserialize, JsonSchema)]

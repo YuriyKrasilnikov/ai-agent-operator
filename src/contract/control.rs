@@ -5,6 +5,7 @@
 
 use std::{
     fmt::{Display, Formatter},
+    marker::PhantomData,
     path::PathBuf,
 };
 
@@ -29,6 +30,192 @@ impl ProjectId {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+}
+
+pub trait IdentityKind {
+    const FIELD: &'static str;
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct Identity<K: IdentityKind> {
+    value: String,
+    #[serde(skip)]
+    marker: PhantomData<K>,
+}
+
+impl<K: IdentityKind> Identity<K> {
+    pub fn new(value: String) -> Result<Self, OperatorError> {
+        if value.is_empty() {
+            return Err(OperatorError::InvalidRequest(format!(
+                "{} must not be empty",
+                K::FIELD
+            )));
+        }
+        Ok(Self {
+            value,
+            marker: PhantomData,
+        })
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.value
+    }
+}
+
+impl<K: IdentityKind> Display for Identity<K> {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.value)
+    }
+}
+
+impl<'de, K: IdentityKind> Deserialize<'de> for Identity<K> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        Self::new(value).map_err(serde::de::Error::custom)
+    }
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize)]
+pub struct InitiatorSessionIdentityKind;
+impl IdentityKind for InitiatorSessionIdentityKind {
+    const FIELD: &'static str = "initiator_session_id";
+}
+pub type InitiatorSessionIdentity = Identity<InitiatorSessionIdentityKind>;
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize)]
+pub struct InitiatorAgentIdentityKind;
+impl IdentityKind for InitiatorAgentIdentityKind {
+    const FIELD: &'static str = "initiator_agent_id";
+}
+pub type InitiatorAgentIdentity = Identity<InitiatorAgentIdentityKind>;
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize)]
+pub struct RoleIdentityKind;
+impl IdentityKind for RoleIdentityKind {
+    const FIELD: &'static str = "role_id";
+}
+pub type RoleIdentity = Identity<RoleIdentityKind>;
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize)]
+pub struct TaskIdentityKind;
+impl IdentityKind for TaskIdentityKind {
+    const FIELD: &'static str = "task_id";
+}
+pub type TaskIdentity = Identity<TaskIdentityKind>;
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize)]
+pub struct SubjectIdentityKind;
+impl IdentityKind for SubjectIdentityKind {
+    const FIELD: &'static str = "subject_id";
+}
+pub type SubjectIdentity = Identity<SubjectIdentityKind>;
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct InitiatorIdentity {
+    pub initiator_session_id: InitiatorSessionIdentity,
+    pub initiator_agent_id: InitiatorAgentIdentity,
+    pub role_id: RoleIdentity,
+    pub task_id: TaskIdentity,
+    pub subject_id: SubjectIdentity,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionContinuity {
+    ContinueBound,
+    Independent,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SessionInventoryRequest {
+    pub project_id: ProjectId,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SessionInspectRequest {
+    pub project_id: ProjectId,
+    pub target_session_id: SessionId,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct InitiatorBindingRequest {
+    pub project_id: ProjectId,
+    pub identity: InitiatorIdentity,
+    pub target_session_id: SessionId,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SessionDecisionRequest {
+    pub project_id: ProjectId,
+    pub identity: InitiatorIdentity,
+    pub continuity: SessionContinuity,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SessionEvidence {
+    pub operation_id: OperationId,
+    pub target_session_id: SessionId,
+    pub observed_model: String,
+    pub observed_claude_version: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct InitiatorBinding {
+    pub project_id: ProjectId,
+    pub identity: InitiatorIdentity,
+    pub target_session_id: SessionId,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BindingRegistrationStatus {
+    Inserted,
+    Existing,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct BindingRegistration {
+    pub binding: InitiatorBinding,
+    pub status: BindingRegistrationStatus,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionRefusalReason {
+    IdentityMismatch,
+    AmbiguousSessions,
+    BindingRequired,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case", tag = "kind", content = "data")]
+pub enum SessionDecisionEvidence {
+    Independent,
+    IdentityBindings { bindings: Vec<InitiatorBinding> },
+    CandidateSessions { target_session_ids: Vec<SessionId> },
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case", tag = "kind", content = "data")]
+pub enum SessionDecision {
+    New {
+        evidence: SessionDecisionEvidence,
+    },
+    ResumeExact {
+        target_session_id: SessionId,
+        evidence_operation_ids: Vec<OperationId>,
+    },
+    Refuse {
+        reason: SessionRefusalReason,
+        evidence: SessionDecisionEvidence,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum BindingPersistence {
+    Inserted,
+    Existing { target_session_id: SessionId },
 }
 
 impl Display for ProjectId {
@@ -242,6 +429,10 @@ pub enum DaemonRequest {
     OperationCancel {
         operation_id: OperationId,
     },
+    SessionInventory(SessionInventoryRequest),
+    SessionInspect(SessionInspectRequest),
+    InitiatorBindingRegister(InitiatorBindingRequest),
+    SessionDecide(SessionDecisionRequest),
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -250,6 +441,10 @@ pub enum DaemonResponse {
     Project(ProjectRegistration),
     Projects(Vec<ProjectRegistration>),
     Operation(Operation),
+    SessionInventory(Vec<SessionEvidence>),
+    SessionEvidence(Vec<SessionEvidence>),
+    BindingRegistration(BindingRegistration),
+    SessionDecision(SessionDecision),
 }
 
 /// The local daemon response envelope. Its result preserves the causal refusal.
@@ -281,6 +476,23 @@ pub enum OperatorError {
     State(String),
     #[error("protocol failure: {0}")]
     Protocol(String),
+    #[error("target session is unknown in project {project_id}: {target_session_id}")]
+    UnknownSession {
+        project_id: ProjectId,
+        target_session_id: SessionId,
+    },
+    #[error(
+        "initiator binding conflicts: existing target session {existing_target_session_id}, requested {requested_target_session_id}"
+    )]
+    BindingConflict {
+        existing_target_session_id: SessionId,
+        requested_target_session_id: SessionId,
+    },
+    #[error("bound target session {target_session_id} has no qualifying operator evidence")]
+    BoundSessionEvidenceMissing {
+        binding: Box<InitiatorBinding>,
+        target_session_id: SessionId,
+    },
 }
 
 pub trait StatePort: Send + Sync {
@@ -307,4 +519,28 @@ pub trait StatePort: Send + Sync {
         observed_version: Option<String>,
     ) -> Result<Operation, OperatorError>;
     fn recover_current_daemon_incomplete(&self) -> Result<(), OperatorError>;
+    fn list_session_evidence(
+        &self,
+        project_id: &ProjectId,
+    ) -> Result<Vec<SessionEvidence>, OperatorError>;
+    fn inspect_session_evidence(
+        &self,
+        project_id: &ProjectId,
+        target_session_id: SessionId,
+    ) -> Result<Vec<SessionEvidence>, OperatorError>;
+    fn persist_initiator_binding(
+        &self,
+        binding: &InitiatorBinding,
+    ) -> Result<BindingPersistence, OperatorError>;
+    fn get_initiator_binding(
+        &self,
+        project_id: &ProjectId,
+        identity: &InitiatorIdentity,
+    ) -> Result<Option<InitiatorBinding>, OperatorError>;
+    fn list_initiator_bindings_for_initiator(
+        &self,
+        project_id: &ProjectId,
+        initiator_session_id: &InitiatorSessionIdentity,
+        initiator_agent_id: &InitiatorAgentIdentity,
+    ) -> Result<Vec<InitiatorBinding>, OperatorError>;
 }

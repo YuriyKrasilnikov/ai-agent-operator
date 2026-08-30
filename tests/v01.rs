@@ -1,12 +1,13 @@
 // Copyright 2026 Yuriy Krasilnikov
 // SPDX-License-Identifier: Apache-2.0
 
+mod support;
+
 use std::{
     fs,
-    io::{BufRead, BufReader, Read, Write},
+    io::{BufRead, BufReader, Write},
     os::unix::net::UnixListener,
     path::Path,
-    process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -15,6 +16,8 @@ use std::{
     thread,
     time::Duration,
 };
+
+use support::{call_tool, initialize_mcp, receive_mcp, send_mcp, start_daemon, start_mcp};
 
 use aiop::{
     contract::control::{
@@ -113,6 +116,54 @@ impl StatePort for TerminalFailingState {
     ) -> Result<(), aiop::contract::control::OperatorError> {
         self.inner.recover_current_daemon_incomplete()
     }
+    fn list_session_evidence(
+        &self,
+        project_id: &ProjectId,
+    ) -> Result<Vec<aiop::contract::control::SessionEvidence>, aiop::contract::control::OperatorError>
+    {
+        self.inner.list_session_evidence(project_id)
+    }
+    fn inspect_session_evidence(
+        &self,
+        project_id: &ProjectId,
+        target_session_id: aiop::contract::control::SessionId,
+    ) -> Result<Vec<aiop::contract::control::SessionEvidence>, aiop::contract::control::OperatorError>
+    {
+        self.inner
+            .inspect_session_evidence(project_id, target_session_id)
+    }
+    fn persist_initiator_binding(
+        &self,
+        binding: &aiop::contract::control::InitiatorBinding,
+    ) -> Result<aiop::contract::control::BindingPersistence, aiop::contract::control::OperatorError>
+    {
+        self.inner.persist_initiator_binding(binding)
+    }
+    fn get_initiator_binding(
+        &self,
+        project_id: &ProjectId,
+        identity: &aiop::contract::control::InitiatorIdentity,
+    ) -> Result<
+        Option<aiop::contract::control::InitiatorBinding>,
+        aiop::contract::control::OperatorError,
+    > {
+        self.inner.get_initiator_binding(project_id, identity)
+    }
+    fn list_initiator_bindings_for_initiator(
+        &self,
+        project_id: &ProjectId,
+        initiator_session_id: &aiop::contract::control::InitiatorSessionIdentity,
+        initiator_agent_id: &aiop::contract::control::InitiatorAgentIdentity,
+    ) -> Result<
+        Vec<aiop::contract::control::InitiatorBinding>,
+        aiop::contract::control::OperatorError,
+    > {
+        self.inner.list_initiator_bindings_for_initiator(
+            project_id,
+            initiator_session_id,
+            initiator_agent_id,
+        )
+    }
 }
 
 #[test]
@@ -169,6 +220,12 @@ fn operation(response: DaemonResponse) -> Operation {
         DaemonResponse::Operation(operation) => operation,
         DaemonResponse::Project(_) | DaemonResponse::Projects(_) => {
             panic!("operation request must return an operation")
+        }
+        DaemonResponse::SessionInventory(_)
+        | DaemonResponse::SessionEvidence(_)
+        | DaemonResponse::BindingRegistration(_)
+        | DaemonResponse::SessionDecision(_) => {
+            panic!("operation request must not return a V0.2 session response")
         }
     }
 }
@@ -994,105 +1051,6 @@ fn mcp_stdio_projects_through_the_real_daemon() {
     daemon.terminate();
 }
 
-struct ManagedProcess {
-    child: Child,
-    name: &'static str,
-}
-
-impl ManagedProcess {
-    fn spawn(mut command: Command, name: &'static str) -> Self {
-        let child = match command.spawn() {
-            Ok(child) => child,
-            Err(error) => panic!("{name} process starts: {error}"),
-        };
-        Self { child, name }
-    }
-
-    fn take_stdin(&mut self) -> ChildStdin {
-        match self.child.stdin.take() {
-            Some(stdin) => stdin,
-            None => panic!("{} stdin is piped", self.name),
-        }
-    }
-
-    fn take_stdout(&mut self) -> ChildStdout {
-        match self.child.stdout.take() {
-            Some(stdout) => stdout,
-            None => panic!("{} stdout is piped", self.name),
-        }
-    }
-
-    fn child_mut(&mut self) -> &mut Child {
-        &mut self.child
-    }
-
-    fn terminate(&mut self) {
-        match self.child.kill() {
-            Ok(()) => {}
-            Err(error) => panic!("{} process could not stop: {error}", self.name),
-        }
-        match self.child.wait() {
-            Ok(_) => {}
-            Err(error) => panic!("{} process exit is observed: {error}", self.name),
-        }
-    }
-}
-
-impl Drop for ManagedProcess {
-    fn drop(&mut self) {
-        match self.child.try_wait() {
-            Ok(Some(_)) => {}
-            Ok(None) => {
-                if let Err(error) = self.child.kill() {
-                    eprintln!("{} process cleanup kill failed: {error}", self.name);
-                }
-                if let Err(error) = self.child.wait() {
-                    eprintln!("{} process cleanup wait failed: {error}", self.name);
-                }
-            }
-            Err(error) => eprintln!("{} process cleanup status failed: {error}", self.name),
-        }
-    }
-}
-
-fn start_daemon(database: &Path, socket: &Path) -> ManagedProcess {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_aiopd"));
-    command
-        .arg("--state")
-        .arg(database)
-        .arg("--socket")
-        .arg(socket)
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped());
-    let mut daemon = ManagedProcess::spawn(command, "daemon");
-    wait_for_socket(socket, daemon.child_mut());
-    daemon
-}
-
-fn start_mcp(socket: &Path) -> ManagedProcess {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_aiop-mcp"));
-    command
-        .arg("--socket")
-        .arg(socket)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    ManagedProcess::spawn(command, "MCP")
-}
-
-fn initialize_mcp(input: &mut impl Write, output: &mut impl BufRead) {
-    send_mcp(
-        input,
-        serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"acceptance","version":"1"}}}),
-    );
-    let initialize = receive_mcp(output);
-    assert_eq!(initialize["id"], 1);
-    send_mcp(
-        input,
-        serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
-    );
-}
-
 fn register_project_mcp(
     input: &mut impl Write,
     output: &mut impl BufRead,
@@ -1102,51 +1060,16 @@ fn register_project_mcp(
 ) {
     let working_directory = directory.path().display().to_string();
     let executable = project.claude_executable.display().to_string();
-    send_mcp(
+    let registered = call_tool(
         input,
-        serde_json::json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"project_register","arguments":{"project_id":project.project_id.as_str(),"working_directory":working_directory,"claude_executable":executable,"expected_opus_model":"opus"}}}),
+        output,
+        id,
+        "project_register",
+        serde_json::json!({"project_id":project.project_id.as_str(),"working_directory":working_directory,"claude_executable":executable,"expected_opus_model":"opus"}),
     );
-    let registered = receive_mcp(output);
-    assert_eq!(registered["id"], id);
     assert_eq!(registered["result"]["isError"], false);
 }
 
-fn wait_for_socket(path: &Path, daemon: &mut Child) {
-    loop {
-        if path.exists() {
-            return;
-        }
-        if let Some(status) = daemon.try_wait().expect("daemon status is observable") {
-            panic!(
-                "daemon ended before creating its endpoint: {status}; {}",
-                daemon_diagnostic(daemon)
-            );
-        }
-        thread::yield_now();
-    }
-}
-
-fn daemon_diagnostic(daemon: &mut Child) -> String {
-    let Some(mut stderr) = daemon.stderr.take() else {
-        return "daemon standard error was unavailable".to_owned();
-    };
-    let mut message = String::new();
-    match stderr.read_to_string(&mut message) {
-        Ok(_) if message.is_empty() => "daemon wrote no standard error".to_owned(),
-        Ok(_) => format!("daemon standard error: {message}"),
-        Err(error) => format!("daemon standard error could not be read: {error}"),
-    }
-}
-
-fn send_mcp(input: &mut impl Write, value: serde_json::Value) {
-    writeln!(input, "{value}").expect("MCP request writes");
-    input.flush().expect("MCP request flushes");
-}
-fn receive_mcp(output: &mut impl BufRead) -> serde_json::Value {
-    let mut line = String::new();
-    output.read_line(&mut line).expect("MCP response reads");
-    serde_json::from_str(&line).expect("MCP response is JSON")
-}
 fn operation_from_mcp(response: serde_json::Value) -> Operation {
     let text = response["result"]["content"][0]["text"]
         .as_str()
@@ -1155,6 +1078,12 @@ fn operation_from_mcp(response: serde_json::Value) -> Operation {
         DaemonResponse::Operation(operation) => operation,
         DaemonResponse::Project(_) | DaemonResponse::Projects(_) => {
             panic!("MCP response must be an operation")
+        }
+        DaemonResponse::SessionInventory(_)
+        | DaemonResponse::SessionEvidence(_)
+        | DaemonResponse::BindingRegistration(_)
+        | DaemonResponse::SessionDecision(_) => {
+            panic!("MCP response must not be a V0.2 session response")
         }
     }
 }

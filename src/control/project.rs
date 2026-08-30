@@ -24,9 +24,9 @@ pub fn list(state: &dyn StatePort) -> Result<Vec<ProjectRegistration>, OperatorE
 
 pub fn resolve(
     state: &dyn StatePort,
-    project_id: &crate::contract::control::ProjectId,
+    project_id: &ProjectId,
 ) -> Result<ProjectRegistration, OperatorError> {
-    let project = state.get_project(project_id)?;
+    let project = get(state, project_id)?;
     if !project.working_directory.is_dir() {
         return Err(OperatorError::InvalidRequest(
             "registered working_directory is not a directory".to_owned(),

@@ -2,7 +2,10 @@
 
 AI Agent Operator lets a local MCP client start a Claude Opus review through a
 separately running durable daemon, receive its persisted terminal result, and
-continue that exact Claude session with `resume_exact`.
+continue that exact Claude session with `resume_exact`. A client can also
+inspect successful operator-owned session evidence, bind an explicit initiator
+identity to one evidenced session, and obtain a side-effect-free
+`new | resume_exact | refuse` decision.
 
 The daemon, rather than the MCP client, owns the Claude child and the SQLite
 state. A complete request is idempotent, and only one active operation may
@@ -57,6 +60,8 @@ current schemas. The available tools are:
 
 - `project_register`, `project_get`, `project_list`
 - `operation_start`, `operation_get`, `operation_wait`, `operation_cancel`
+- `session_inventory`, `session_inspect`
+- `initiator_binding_register`, `session_decide`
 
 Register a project before starting an operation. `claude_executable` is the
 executable path passed directly to Claude; `working_directory` is its working
@@ -84,19 +89,40 @@ current or terminal state by passing its `operation_id`.
 {"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"operation_wait","arguments":{"operation_id":"00000000-0000-4000-8000-000000000002","wait_millis":60000}}}
 ```
 
-To continue the exact session, use the returned `session_id` and a new request
-ID. The daemon passes that UUID directly to Claude with its exact-resume
-invocation; it does not select a nearby session.
+List successful session evidence created by this operator, then register one
+complete initiator identity against an exact evidenced target session. The
+identity key consists of initiator session, initiator agent, role, task, and
+subject; an existing key cannot be silently replaced with another target.
 
 ```json
-{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"operation_start","arguments":{"request_id":"00000000-0000-4000-8000-000000000003","project_id":"repository-review","intent":{"kind":"resume_exact","session_id":"00000000-0000-4000-8000-000000000004"},"prompt":"Continue the review using the prior result.","review_profile":"opus_read_only"}}}
+{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"session_inventory","arguments":{"project_id":"repository-review"}}}
+{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"initiator_binding_register","arguments":{"project_id":"repository-review","initiator_session_id":"initiator-session","initiator_agent_id":"main","role_id":"review-coordinator","task_id":"release-review","subject_id":"candidate-identity","target_session_id":"00000000-0000-4000-8000-000000000004"}}}
+```
+
+Request a pure continuity decision. `continue_bound` returns `resume_exact`
+only for the exact durable binding; otherwise it returns a typed refusal.
+`independent` returns `new`. Decisions do not create operations, launch Claude,
+or mutate bindings.
+
+```json
+{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"session_decide","arguments":{"project_id":"repository-review","initiator_session_id":"initiator-session","initiator_agent_id":"main","role_id":"review-coordinator","task_id":"release-review","subject_id":"candidate-identity","continuity":"continue_bound"}}}
+```
+
+To continue the exact session, pass the decision's `target_session_id` as the
+`session_id` of a `resume_exact` intent, together with a new request ID. The
+daemon passes that UUID directly to Claude with its exact-resume invocation; it
+does not select a nearby session.
+
+```json
+{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"operation_start","arguments":{"request_id":"00000000-0000-4000-8000-000000000003","project_id":"repository-review","intent":{"kind":"resume_exact","session_id":"00000000-0000-4000-8000-000000000004"},"prompt":"Continue the review using the prior result.","review_profile":"opus_read_only"}}}
 ```
 
 ## Current boundaries
 
 - Claude Code is the only target provider.
-- The supported intents are `new` and `resume_exact`; the operator does not
-  discover, select, fork, rename, export, or adopt sessions.
+- The supported operation intents are `new` and `resume_exact`. The operator
+  does not discover external Claude sessions or select a target without an
+  exact durable binding; it does not fork, rename, export, or adopt sessions.
 - A daemon restart classifies incomplete work as indeterminate and refuses that
   session instead of reconnecting to a surviving child.
 - One daemon owns a SQLite state file for its lifetime. A durable-state failure

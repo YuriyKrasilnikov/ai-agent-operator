@@ -1,6 +1,6 @@
 [package]
 name = "ai-agent-operator"
-version = "0.1.0"
+version = "0.2.0"
 description = "Local durable MCP operator for exact Claude Opus review sessions"
 edition = "2024"
 rust-version = "1.98"
