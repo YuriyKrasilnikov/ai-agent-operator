@@ -1,7 +1,7 @@
 // Copyright 2026 Yuriy Krasilnikov
 // SPDX-License-Identifier: Apache-2.0
 
-//! OC05: interprets atomic persistence facts for one current session writer.
+//! Interprets atomic persistence facts for one current session writer.
 
 use crate::contract::control::{
     Operation, OperationAdmission, OperationIntent, OperationStart, OperationState, OperatorError,

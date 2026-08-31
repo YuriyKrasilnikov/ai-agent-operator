@@ -5,6 +5,9 @@
 
 mod child;
 mod command;
+mod conversation;
+mod conversation_codec;
+mod conversation_input;
 mod execution;
 mod launch;
 mod output;

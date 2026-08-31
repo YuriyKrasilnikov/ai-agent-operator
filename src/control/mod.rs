@@ -1,7 +1,7 @@
 // Copyright 2026 Yuriy Krasilnikov
 // SPDX-License-Identifier: Apache-2.0
 
-//! Operation Control composition and its C3-owned modules.
+//! Composes durable operation admission, execution, and observation semantics.
 
 use crate::contract::control::{DaemonRequest, DaemonResponse, OperatorError, StatePort};
 use crate::contract::target::TargetPort;
@@ -10,6 +10,7 @@ use std::sync::Arc;
 pub mod ingress;
 
 mod admission;
+mod conversation;
 mod initiator_binding;
 mod operation;
 mod project;
@@ -73,6 +74,23 @@ impl OperationControl {
             DaemonRequest::SessionDecide(request) => Ok(DaemonResponse::SessionDecision(
                 session_decision::decide(self.state.as_ref(), request)?,
             )),
+            DaemonRequest::ConversationStart(request) => Ok(DaemonResponse::Conversation(
+                conversation::start(self, request)?,
+            )),
+            DaemonRequest::ConversationSend(request) => Ok(DaemonResponse::Conversation(
+                conversation::send(self, request)?,
+            )),
+            DaemonRequest::ConversationWait(request) => Ok(DaemonResponse::Conversation(
+                conversation::wait(self, request)?,
+            )),
+            DaemonRequest::ConversationStop {
+                conversation_id,
+                mode,
+            } => Ok(DaemonResponse::Conversation(conversation::stop(
+                self,
+                conversation_id,
+                mode,
+            )?)),
         }
     }
 }

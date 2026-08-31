@@ -1,8 +1,10 @@
 # AI Agent Operator
 
-AI Agent Operator lets a local MCP client start a Claude Opus review through a
-separately running durable daemon, receive its persisted terminal result, and
-continue that exact Claude session with `resume_exact`. A client can also
+AI Agent Operator lets a local MCP client start one persistent Claude Opus
+conversation through a separately running durable daemon, receive persisted
+text deltas and turn results, submit additional turns to the same exact Claude
+session, and reconnect its MCP projection without losing the durable timeline.
+A client can also
 inspect successful operator-owned session evidence, bind an explicit initiator
 identity to one evidenced session, and obtain a side-effect-free
 `new | resume_exact | refuse` decision.
@@ -60,6 +62,7 @@ current schemas. The available tools are:
 
 - `project_register`, `project_get`, `project_list`
 - `operation_start`, `operation_get`, `operation_wait`, `operation_cancel`
+- `conversation_start`, `conversation_send`, `conversation_wait`, `conversation_stop`
 - `session_inventory`, `session_inspect`
 - `initiator_binding_register`, `session_decide`
 
@@ -117,6 +120,25 @@ does not select a nearby session.
 {"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"operation_start","arguments":{"request_id":"00000000-0000-4000-8000-000000000003","project_id":"repository-review","intent":{"kind":"resume_exact","session_id":"00000000-0000-4000-8000-000000000004"},"prompt":"Continue the review using the prior result.","review_profile":"opus_read_only"}}}
 ```
 
+Start a live conversation with caller-generated request and turn UUIDs. Each
+new turn is persisted before it is written to the already-running Claude child.
+The `conversation_start` response contains its generated `conversation_id`; use
+that exact value in later calls. Use `conversation_wait` with the last received
+event sequence after an MCP reconnect; `conversation_stop` accepts `graceful`
+or `cancel`.
+
+After the first wait, reconnect if needed and use its highest event sequence as
+the next cursor (the example uses `6` and then `12` as returned values).
+
+```json
+{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"conversation_start","arguments":{"request_id":"00000000-0000-4000-8000-000000000010","project_id":"repository-review","intent":{"kind":"new"},"turn_id":"00000000-0000-4000-8000-000000000011","prompt":"Review this change live.","review_profile":"opus_read_only"}}}
+{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"conversation_wait","arguments":{"conversation_id":"<conversation_id returned by conversation_start>","after_sequence":0,"wait_millis":60000}}}
+{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"conversation_send","arguments":{"conversation_id":"<conversation_id returned by conversation_start>","turn_id":"00000000-0000-4000-8000-000000000012","prompt":"Check the error path too."}}}
+{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"conversation_wait","arguments":{"conversation_id":"<conversation_id returned by conversation_start>","after_sequence":6,"wait_millis":60000}}}
+{"jsonrpc":"2.0","id":13,"method":"tools/call","params":{"name":"conversation_stop","arguments":{"conversation_id":"<conversation_id returned by conversation_start>","mode":"graceful"}}}
+{"jsonrpc":"2.0","id":14,"method":"tools/call","params":{"name":"conversation_wait","arguments":{"conversation_id":"<conversation_id returned by conversation_start>","after_sequence":12,"wait_millis":60000}}}
+```
+
 ## Current boundaries
 
 - Claude Code is the only target provider.
@@ -129,6 +151,8 @@ does not select a nearby session.
   refuses further daemon requests until that daemon process is restarted.
 - The operator has no automatic retry, fallback model, fallback executable,
   default timeout, or output truncation policy.
+- A live conversation keeps one direct Claude child and its stdin until an
+  explicit graceful close or cancellation. A restart does not adopt that child.
 - It does not measure or compact Claude context and does not provide an
   interactive terminal attachment.
 

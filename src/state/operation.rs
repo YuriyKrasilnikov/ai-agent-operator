@@ -133,29 +133,27 @@ pub(crate) fn transition(
         Ok(o)
     })
 }
-pub(crate) fn recover(a: &Adapter) -> Result<(), OperatorError> {
-    a.transaction(|c| {
-        let mut s = c
-            .prepare("SELECT record_json FROM operations")
-            .map_err(sql_error)?;
-        let mut items = Vec::new();
-        while let State::Row = s.next().map_err(sql_error)? {
-            let o: Operation = decode(s.read::<String, _>(0).map_err(sql_error)?)?;
-            if !o.state.terminal() {
-                items.push(o)
-            }
+pub(crate) fn recover_in_connection(c: &ConnectionThreadSafe) -> Result<(), OperatorError> {
+    let mut s = c
+        .prepare("SELECT record_json FROM operations")
+        .map_err(sql_error)?;
+    let mut items = Vec::new();
+    while let State::Row = s.next().map_err(sql_error)? {
+        let o: Operation = decode(s.read::<String, _>(0).map_err(sql_error)?)?;
+        if !o.state.terminal() {
+            items.push(o)
         }
-        for mut o in items {
-            o.state = OperationState::Indeterminate;
-            o.terminal_outcome = Some(TerminalOutcome::Indeterminate(
-                "daemon restarted before direct child was classified".to_owned(),
-            ));
-            write(c, &o)?
-        }
-        Ok(())
-    })
+    }
+    for mut o in items {
+        o.state = OperationState::Indeterminate;
+        o.terminal_outcome = Some(TerminalOutcome::Indeterminate(
+            "daemon restarted before direct child was classified".to_owned(),
+        ));
+        write(c, &o)?
+    }
+    Ok(())
 }
-fn by_request(
+pub(crate) fn by_request(
     c: &ConnectionThreadSafe,
     k: &str,
 ) -> Result<Option<(Operation, String)>, OperatorError> {
@@ -171,7 +169,10 @@ fn by_request(
         State::Done => Ok(None),
     }
 }
-fn by_id(c: &ConnectionThreadSafe, id: OperationId) -> Result<Option<Operation>, OperatorError> {
+pub(crate) fn by_id(
+    c: &ConnectionThreadSafe,
+    id: OperationId,
+) -> Result<Option<Operation>, OperatorError> {
     let k = id.value().to_string();
     let mut s = c
         .prepare("SELECT record_json FROM operations WHERE operation_id = ?")
@@ -182,7 +183,7 @@ fn by_id(c: &ConnectionThreadSafe, id: OperationId) -> Result<Option<Operation>,
         State::Done => Ok(None),
     }
 }
-fn write(c: &ConnectionThreadSafe, o: &Operation) -> Result<(), OperatorError> {
+pub(crate) fn write(c: &ConnectionThreadSafe, o: &Operation) -> Result<(), OperatorError> {
     let r = encode(o)?;
     let k = o.operation_id.value().to_string();
     let mut s = c

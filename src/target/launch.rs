@@ -5,12 +5,21 @@
 
 use std::process::{Child, Stdio};
 
-use crate::contract::target::TargetCommand;
+use crate::contract::target::{TargetCommand, TargetLiveStart};
 
 use super::command;
 
 pub fn spawn(command: &TargetCommand) -> Result<Child, String> {
     command::build(command)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("configured Claude executable could not start: {error}"))
+}
+
+pub fn spawn_live(start: &TargetLiveStart) -> Result<Child, String> {
+    command::build_live(start)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

@@ -116,6 +116,103 @@ impl StatePort for TerminalFailingState {
     ) -> Result<(), aiop::contract::control::OperatorError> {
         self.inner.recover_current_daemon_incomplete()
     }
+    fn persist_conversation_start(
+        &self,
+        request: &aiop::contract::control::ConversationStart,
+        session: aiop::contract::control::SessionId,
+        fingerprint: &str,
+    ) -> Result<
+        aiop::contract::control::ConversationStartAdmission,
+        aiop::contract::control::OperatorError,
+    > {
+        self.inner
+            .persist_conversation_start(request, session, fingerprint)
+    }
+    fn get_conversation(
+        &self,
+        conversation_id: aiop::contract::control::ConversationId,
+    ) -> Result<aiop::contract::control::Conversation, aiop::contract::control::OperatorError> {
+        self.inner.get_conversation(conversation_id)
+    }
+    fn get_conversation_snapshot(
+        &self,
+        conversation_id: aiop::contract::control::ConversationId,
+        after_sequence: u64,
+    ) -> Result<aiop::contract::control::ConversationSnapshot, aiop::contract::control::OperatorError>
+    {
+        self.inner
+            .get_conversation_snapshot(conversation_id, after_sequence)
+    }
+    fn persist_conversation_turn(
+        &self,
+        request: &aiop::contract::control::ConversationSend,
+        fingerprint: &str,
+    ) -> Result<
+        aiop::contract::control::ConversationTurnAdmission,
+        aiop::contract::control::OperatorError,
+    > {
+        self.inner.persist_conversation_turn(request, fingerprint)
+    }
+    fn record_conversation_turn_observation(
+        &self,
+        conversation_id: aiop::contract::control::ConversationId,
+        turn_id: aiop::contract::control::TurnId,
+        state: Option<aiop::contract::control::TurnState>,
+        result: Option<String>,
+        payload: aiop::contract::control::ConversationEventPayload,
+    ) -> Result<
+        aiop::contract::control::ConversationTurnObservation,
+        aiop::contract::control::OperatorError,
+    > {
+        self.inner.record_conversation_turn_observation(
+            conversation_id,
+            turn_id,
+            state,
+            result,
+            payload,
+        )
+    }
+    fn record_conversation_initialization(
+        &self,
+        conversation_id: aiop::contract::control::ConversationId,
+        session_id: aiop::contract::control::SessionId,
+        model: String,
+        claude_version: Option<String>,
+    ) -> Result<aiop::contract::control::ConversationEvent, aiop::contract::control::OperatorError>
+    {
+        self.inner.record_conversation_initialization(
+            conversation_id,
+            session_id,
+            model,
+            claude_version,
+        )
+    }
+    fn close_conversation(
+        &self,
+        conversation_id: aiop::contract::control::ConversationId,
+        mode: aiop::contract::control::ConversationStopMode,
+    ) -> Result<
+        aiop::contract::control::ConversationCloseAdmission,
+        aiop::contract::control::OperatorError,
+    > {
+        self.inner.close_conversation(conversation_id, mode)
+    }
+    fn terminalize_conversation(
+        &self,
+        conversation_id: aiop::contract::control::ConversationId,
+        conversation_state: aiop::contract::control::ConversationState,
+        operation_state: OperationState,
+        terminal: TerminalOutcome,
+        claim_disposition: aiop::contract::control::SessionClaimDisposition,
+    ) -> Result<aiop::contract::control::Conversation, aiop::contract::control::OperatorError> {
+        self.inner.terminalize_conversation(
+            conversation_id,
+            conversation_state,
+            operation_state,
+            terminal,
+            claim_disposition,
+        )
+    }
     fn list_session_evidence(
         &self,
         project_id: &ProjectId,
@@ -224,7 +321,8 @@ fn operation(response: DaemonResponse) -> Operation {
         DaemonResponse::SessionInventory(_)
         | DaemonResponse::SessionEvidence(_)
         | DaemonResponse::BindingRegistration(_)
-        | DaemonResponse::SessionDecision(_) => {
+        | DaemonResponse::SessionDecision(_)
+        | DaemonResponse::Conversation(_) => {
             panic!("operation request must not return a V0.2 session response")
         }
     }
@@ -288,6 +386,32 @@ impl TargetPort for CancellationBeforeLaunchTarget {
 
     fn cancel(&self, _: TargetOperationId) -> Result<(), String> {
         Ok(())
+    }
+
+    fn start_live(
+        &self,
+        _: aiop::contract::target::TargetLiveStart,
+        _: std::sync::mpsc::Sender<aiop::contract::target::TargetLiveObservation>,
+    ) -> Result<(), aiop::contract::target::TargetLiveStartError> {
+        Err(aiop::contract::target::TargetLiveStartError::NoWriter(
+            "pre-launch target fixture does not implement live conversations".to_owned(),
+        ))
+    }
+
+    fn send_live(
+        &self,
+        _: TargetOperationId,
+        _: aiop::contract::target::TargetLiveTurn,
+    ) -> Result<(), String> {
+        Err("pre-launch target fixture does not implement live conversations".to_owned())
+    }
+
+    fn stop_live(
+        &self,
+        _: TargetOperationId,
+        _: aiop::contract::target::TargetLiveStop,
+    ) -> Result<(), String> {
+        Err("pre-launch target fixture does not implement live conversations".to_owned())
     }
 }
 
@@ -1082,7 +1206,8 @@ fn operation_from_mcp(response: serde_json::Value) -> Operation {
         DaemonResponse::SessionInventory(_)
         | DaemonResponse::SessionEvidence(_)
         | DaemonResponse::BindingRegistration(_)
-        | DaemonResponse::SessionDecision(_) => {
+        | DaemonResponse::SessionDecision(_)
+        | DaemonResponse::Conversation(_) => {
             panic!("MCP response must not be a V0.2 session response")
         }
     }

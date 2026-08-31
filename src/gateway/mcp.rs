@@ -1,7 +1,7 @@
 // Copyright 2026 Yuriy Krasilnikov
 // SPDX-License-Identifier: Apache-2.0
 
-//! Explicit rmcp tool projection for the V0.1 local operator contract.
+//! Projects typed local operator requests and results over the MCP protocol.
 
 use std::path::PathBuf;
 
@@ -20,8 +20,9 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use crate::contract::control::{
+    ConversationId, ConversationSend, ConversationStart, ConversationStopMode, ConversationWait,
     DaemonRequest, OperationIntent, OperationStart, ProjectId, ProjectRegistration, RequestId,
-    ReviewProfile, SessionId,
+    ReviewProfile, SessionId, TurnId,
 };
 
 use super::{GatewayError, client, session};
@@ -87,6 +88,22 @@ fn tools() -> Result<ListToolsResult, rmcp::ErrorData> {
                 "operation_cancel",
                 "Request direct-child cancellation and observe its terminal state.",
             )?,
+            tool::<ConversationStartInput>(
+                "conversation_start",
+                "Start one persistent structured Claude conversation.",
+            )?,
+            tool::<ConversationSendInput>(
+                "conversation_send",
+                "Durably submit one caller-identified turn to a live conversation.",
+            )?,
+            tool::<ConversationWaitInput>(
+                "conversation_wait",
+                "Read durable conversation events after a cursor.",
+            )?,
+            tool::<ConversationStopInput>(
+                "conversation_stop",
+                "Close or cancel one live conversation.",
+            )?,
             tool::<session::SessionInventoryInput>(
                 "session_inventory",
                 "List successful operator-owned target-session evidence.",
@@ -129,6 +146,18 @@ fn dispatch(endpoint: &std::path::Path, request: CallToolRequestParams) -> CallT
         }
         "operation_cancel" => {
             decode::<OperationCancelInput>(&request.arguments).and_then(cancel_operation)
+        }
+        "conversation_start" => {
+            decode::<ConversationStartInput>(&request.arguments).and_then(conversation_start)
+        }
+        "conversation_send" => {
+            decode::<ConversationSendInput>(&request.arguments).and_then(conversation_send)
+        }
+        "conversation_wait" => {
+            decode::<ConversationWaitInput>(&request.arguments).and_then(conversation_wait)
+        }
+        "conversation_stop" => {
+            decode::<ConversationStopInput>(&request.arguments).and_then(conversation_stop)
         }
         "session_inventory" => decode::<session::SessionInventoryInput>(&request.arguments)
             .and_then(session::inventory),
@@ -211,19 +240,60 @@ fn cancel_operation(input: OperationCancelInput) -> Result<DaemonRequest, Gatewa
     })
 }
 fn start(input: OperationStartInput) -> Result<DaemonRequest, GatewayError> {
-    let intent = match input.intent {
-        McpIntent::New => OperationIntent::New,
-        McpIntent::ResumeExact { session_id } => OperationIntent::ResumeExact {
-            session_id: SessionId::new_exact(parse_uuid(&session_id, "session_id")?),
-        },
-    };
     Ok(DaemonRequest::OperationStart(OperationStart {
         request_id: RequestId::new(parse_uuid(&input.request_id, "request_id")?),
         project_id: project_id(input.project_id)?,
-        intent,
+        intent: mcp_intent(input.intent)?,
         prompt: input.prompt,
         review_profile: review_profile(input.review_profile)?,
     }))
+}
+fn conversation_start(input: ConversationStartInput) -> Result<DaemonRequest, GatewayError> {
+    Ok(DaemonRequest::ConversationStart(ConversationStart {
+        request_id: RequestId::new(parse_uuid(&input.request_id, "request_id")?),
+        project_id: project_id(input.project_id)?,
+        intent: mcp_intent(input.intent)?,
+        turn_id: TurnId::new(parse_uuid(&input.turn_id, "turn_id")?),
+        prompt: input.prompt,
+        review_profile: review_profile(input.review_profile)?,
+    }))
+}
+fn conversation_send(input: ConversationSendInput) -> Result<DaemonRequest, GatewayError> {
+    Ok(DaemonRequest::ConversationSend(ConversationSend {
+        conversation_id: ConversationId::new(crate::contract::control::OperationId::new_exact(
+            parse_uuid(&input.conversation_id, "conversation_id")?,
+        )),
+        turn_id: TurnId::new(parse_uuid(&input.turn_id, "turn_id")?),
+        prompt: input.prompt,
+    }))
+}
+fn conversation_wait(input: ConversationWaitInput) -> Result<DaemonRequest, GatewayError> {
+    Ok(DaemonRequest::ConversationWait(ConversationWait {
+        conversation_id: ConversationId::new(crate::contract::control::OperationId::new_exact(
+            parse_uuid(&input.conversation_id, "conversation_id")?,
+        )),
+        after_sequence: input.after_sequence,
+        wait_millis: input.wait_millis,
+    }))
+}
+fn conversation_stop(input: ConversationStopInput) -> Result<DaemonRequest, GatewayError> {
+    Ok(DaemonRequest::ConversationStop {
+        conversation_id: ConversationId::new(crate::contract::control::OperationId::new_exact(
+            parse_uuid(&input.conversation_id, "conversation_id")?,
+        )),
+        mode: match input.mode {
+            McpConversationStopMode::Graceful => ConversationStopMode::Graceful,
+            McpConversationStopMode::Cancel => ConversationStopMode::Cancel,
+        },
+    })
+}
+fn mcp_intent(input: McpIntent) -> Result<OperationIntent, GatewayError> {
+    match input {
+        McpIntent::New => Ok(OperationIntent::New),
+        McpIntent::ResumeExact { session_id } => Ok(OperationIntent::ResumeExact {
+            session_id: SessionId::new_exact(parse_uuid(&session_id, "session_id")?),
+        }),
+    }
 }
 fn parse_uuid(value: &str, field: &str) -> Result<Uuid, GatewayError> {
     value
@@ -292,6 +362,42 @@ struct OperationStartInput {
     intent: McpIntent,
     prompt: String,
     review_profile: McpReviewProfile,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ConversationStartInput {
+    request_id: String,
+    project_id: String,
+    intent: McpIntent,
+    turn_id: String,
+    prompt: String,
+    review_profile: McpReviewProfile,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ConversationSendInput {
+    conversation_id: String,
+    turn_id: String,
+    prompt: String,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ConversationWaitInput {
+    conversation_id: String,
+    after_sequence: u64,
+    wait_millis: u64,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ConversationStopInput {
+    conversation_id: String,
+    mode: McpConversationStopMode,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum McpConversationStopMode {
+    Graceful,
+    Cancel,
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]

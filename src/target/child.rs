@@ -16,20 +16,50 @@ pub struct Children {
     children: Arc<Mutex<HashMap<TargetOperationId, Arc<Mutex<Child>>>>>,
 }
 
+pub(crate) struct ChildRegistrationError {
+    message: String,
+    exit_evidence: ChildExitEvidence,
+}
+
+/// States whether direct-child exit was observed during cleanup.
+pub(crate) enum ChildExitEvidence {
+    Proven,
+    Unproven,
+}
+
+impl ChildRegistrationError {
+    pub(crate) fn message(&self) -> &str {
+        &self.message
+    }
+
+    pub(crate) fn exit_evidence(&self) -> &ChildExitEvidence {
+        &self.exit_evidence
+    }
+}
+
 impl Children {
     pub fn insert(
         &self,
         operation: TargetOperationId,
         child: Child,
-    ) -> Result<Arc<Mutex<Child>>, String> {
-        let child = Arc::new(Mutex::new(child));
-        let mut children = self
-            .children
-            .lock()
-            .map_err(|_| "direct-child registry was poisoned".to_owned())?;
-        if children.insert(operation, Arc::clone(&child)).is_some() {
-            return Err("operation already owns a direct child".to_owned());
+    ) -> Result<Arc<Mutex<Child>>, ChildRegistrationError> {
+        let mut children = match self.children.lock() {
+            Ok(children) => children,
+            Err(_) => {
+                return Err(stop_unregistered(
+                    child,
+                    "direct-child registry was poisoned",
+                ));
+            }
+        };
+        if children.contains_key(&operation) {
+            return Err(stop_unregistered(
+                child,
+                "operation already owns a direct child",
+            ));
         }
+        let child = Arc::new(Mutex::new(child));
+        children.insert(operation, Arc::clone(&child));
         Ok(child)
     }
 
@@ -83,5 +113,35 @@ impl Children {
             .get(&operation)
             .cloned()
             .ok_or_else(|| "direct child is not active".to_owned())
+    }
+}
+
+fn stop_unregistered(child: Child, root: &str) -> ChildRegistrationError {
+    let mut child = child;
+    let termination = child.kill();
+    let exit = child.wait();
+    match (termination, exit) {
+        (Ok(()), Ok(_)) => ChildRegistrationError {
+            message: root.to_owned(),
+            exit_evidence: ChildExitEvidence::Proven,
+        },
+        (Err(termination), Ok(_)) => ChildRegistrationError {
+            message: format!(
+                "{root}; unregistered direct child termination request failed after observed exit: {termination}"
+            ),
+            exit_evidence: ChildExitEvidence::Proven,
+        },
+        (Ok(()), Err(exit)) => ChildRegistrationError {
+            message: format!(
+                "{root}; unregistered direct child exit could not be observed: {exit}"
+            ),
+            exit_evidence: ChildExitEvidence::Unproven,
+        },
+        (Err(termination), Err(exit)) => ChildRegistrationError {
+            message: format!(
+                "{root}; unregistered direct child termination failed: {termination}; direct child exit could not be observed: {exit}"
+            ),
+            exit_evidence: ChildExitEvidence::Unproven,
+        },
     }
 }

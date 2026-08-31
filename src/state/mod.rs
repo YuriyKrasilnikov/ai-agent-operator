@@ -1,8 +1,11 @@
 // Copyright 2026 Yuriy Krasilnikov
 // SPDX-License-Identifier: Apache-2.0
 
-//! SQLite State composition for project, operation, claim, and binding records.
+//! SQLite State composition for durable project, operation, session, and conversation records.
 
+mod conversation;
+mod conversation_timeline;
+mod conversation_turn;
 mod initiator_binding;
 mod operation;
 mod ownership;
@@ -13,10 +16,14 @@ mod sqlite;
 use std::path::Path;
 
 use crate::contract::control::{
-    BindingPersistence, InitiatorAgentIdentity, InitiatorBinding, InitiatorIdentity,
-    InitiatorSessionIdentity, Operation, OperationAdmission, OperationId, OperationStart,
-    OperationState, OperatorError, ProjectId, ProjectRegistration, SessionEvidence, SessionId,
-    StatePort, TerminalOutcome,
+    BindingPersistence, Conversation, ConversationCloseAdmission, ConversationEvent,
+    ConversationEventPayload, ConversationId, ConversationSend, ConversationSnapshot,
+    ConversationStart, ConversationStartAdmission, ConversationState, ConversationStopMode,
+    ConversationTurnAdmission, ConversationTurnObservation, InitiatorAgentIdentity,
+    InitiatorBinding, InitiatorIdentity, InitiatorSessionIdentity, Operation, OperationAdmission,
+    OperationId, OperationStart, OperationState, OperatorError, ProjectId, ProjectRegistration,
+    SessionClaimDisposition, SessionEvidence, SessionId, StatePort, TerminalOutcome, TurnId,
+    TurnState,
 };
 
 #[derive(Clone)]
@@ -29,7 +36,7 @@ impl SqliteState {
         let state = Self {
             adapter: sqlite::Adapter::open(path)?,
         };
-        operation::recover(&state.adapter)?;
+        conversation::recover(&state.adapter)?;
         Ok(state)
     }
 }
@@ -78,7 +85,91 @@ impl StatePort for SqliteState {
         )
     }
     fn recover_current_daemon_incomplete(&self) -> Result<(), OperatorError> {
-        operation::recover(&self.adapter)
+        conversation::recover(&self.adapter)
+    }
+    fn persist_conversation_start(
+        &self,
+        request: &ConversationStart,
+        session_id: SessionId,
+        fingerprint: &str,
+    ) -> Result<ConversationStartAdmission, OperatorError> {
+        conversation::persist_start(&self.adapter, request, session_id, fingerprint)
+    }
+    fn get_conversation(
+        &self,
+        conversation_id: ConversationId,
+    ) -> Result<Conversation, OperatorError> {
+        conversation::get(&self.adapter, conversation_id)
+    }
+    fn get_conversation_snapshot(
+        &self,
+        conversation_id: ConversationId,
+        after_sequence: u64,
+    ) -> Result<ConversationSnapshot, OperatorError> {
+        conversation::snapshot(&self.adapter, conversation_id, after_sequence)
+    }
+    fn persist_conversation_turn(
+        &self,
+        request: &ConversationSend,
+        fingerprint: &str,
+    ) -> Result<ConversationTurnAdmission, OperatorError> {
+        conversation::persist_turn(&self.adapter, request, fingerprint)
+    }
+    fn record_conversation_turn_observation(
+        &self,
+        conversation_id: ConversationId,
+        turn_id: TurnId,
+        state: Option<TurnState>,
+        result: Option<String>,
+        payload: ConversationEventPayload,
+    ) -> Result<ConversationTurnObservation, OperatorError> {
+        conversation::record_turn_observation(
+            &self.adapter,
+            conversation_id,
+            turn_id,
+            state,
+            result,
+            payload,
+        )
+    }
+    fn record_conversation_initialization(
+        &self,
+        conversation_id: ConversationId,
+        session_id: SessionId,
+        model: String,
+        claude_version: Option<String>,
+    ) -> Result<ConversationEvent, OperatorError> {
+        conversation::record_initialization(
+            &self.adapter,
+            conversation_id,
+            session_id,
+            model,
+            claude_version,
+        )
+    }
+    fn close_conversation(
+        &self,
+        conversation_id: ConversationId,
+        mode: ConversationStopMode,
+    ) -> Result<ConversationCloseAdmission, OperatorError> {
+        conversation::close(&self.adapter, conversation_id, mode)
+    }
+    fn terminalize_conversation(
+        &self,
+        conversation_id: ConversationId,
+        conversation_state: ConversationState,
+        operation_state: OperationState,
+        terminal: TerminalOutcome,
+        claim_disposition: SessionClaimDisposition,
+    ) -> Result<Conversation, OperatorError> {
+        conversation::terminalize(
+            &self.adapter,
+            conversation_id,
+            conversation_state,
+            operation_state,
+            terminal,
+            claim_disposition,
+        )
     }
     fn list_session_evidence(
         &self,

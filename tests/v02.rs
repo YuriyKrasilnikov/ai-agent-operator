@@ -70,6 +70,32 @@ impl TargetPort for SucceedingTarget {
     fn cancel(&self, _: TargetOperationId) -> Result<(), String> {
         Ok(())
     }
+
+    fn start_live(
+        &self,
+        _: aiop::contract::target::TargetLiveStart,
+        _: std::sync::mpsc::Sender<aiop::contract::target::TargetLiveObservation>,
+    ) -> Result<(), aiop::contract::target::TargetLiveStartError> {
+        Err(aiop::contract::target::TargetLiveStartError::NoWriter(
+            "V0.2 target fixture does not implement live conversations".to_owned(),
+        ))
+    }
+
+    fn send_live(
+        &self,
+        _: TargetOperationId,
+        _: aiop::contract::target::TargetLiveTurn,
+    ) -> Result<(), String> {
+        Err("V0.2 target fixture does not implement live conversations".to_owned())
+    }
+
+    fn stop_live(
+        &self,
+        _: TargetOperationId,
+        _: aiop::contract::target::TargetLiveStop,
+    ) -> Result<(), String> {
+        Err("V0.2 target fixture does not implement live conversations".to_owned())
+    }
 }
 
 struct Fixture {
@@ -139,7 +165,8 @@ fn operation(response: DaemonResponse) -> Operation {
         | DaemonResponse::SessionInventory(_)
         | DaemonResponse::SessionEvidence(_)
         | DaemonResponse::BindingRegistration(_)
-        | DaemonResponse::SessionDecision(_) => {
+        | DaemonResponse::SessionDecision(_)
+        | DaemonResponse::Conversation(_) => {
             panic!("operation request returned a non-operation payload")
         }
     }
@@ -153,7 +180,8 @@ fn decision(response: DaemonResponse) -> SessionDecision {
         | DaemonResponse::Operation(_)
         | DaemonResponse::SessionInventory(_)
         | DaemonResponse::SessionEvidence(_)
-        | DaemonResponse::BindingRegistration(_) => {
+        | DaemonResponse::BindingRegistration(_)
+        | DaemonResponse::Conversation(_) => {
             panic!("session decision request returned another payload")
         }
     }
@@ -168,7 +196,8 @@ fn evidence(response: DaemonResponse) -> Vec<SessionEvidence> {
         | DaemonResponse::Projects(_)
         | DaemonResponse::Operation(_)
         | DaemonResponse::BindingRegistration(_)
-        | DaemonResponse::SessionDecision(_) => {
+        | DaemonResponse::SessionDecision(_)
+        | DaemonResponse::Conversation(_) => {
             panic!("session evidence request returned another payload")
         }
     }
@@ -373,7 +402,8 @@ fn exact_session_decisions_use_only_durable_operator_evidence_and_bindings() {
         | DaemonResponse::Operation(_)
         | DaemonResponse::SessionInventory(_)
         | DaemonResponse::SessionEvidence(_)
-        | DaemonResponse::SessionDecision(_) => {
+        | DaemonResponse::SessionDecision(_)
+        | DaemonResponse::Conversation(_) => {
             panic!("binding registration returned another payload")
         }
     }
@@ -397,7 +427,8 @@ fn exact_session_decisions_use_only_durable_operator_evidence_and_bindings() {
         | DaemonResponse::Operation(_)
         | DaemonResponse::SessionInventory(_)
         | DaemonResponse::SessionEvidence(_)
-        | DaemonResponse::SessionDecision(_) => {
+        | DaemonResponse::SessionDecision(_)
+        | DaemonResponse::Conversation(_) => {
             panic!("idempotent binding registration returned another payload")
         }
     }

@@ -396,6 +396,291 @@ pub struct Operation {
     pub terminal_outcome: Option<TerminalOutcome>,
 }
 
+/// A durable live conversation has the same identity as its owning operation.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct ConversationId(OperationId);
+
+impl ConversationId {
+    pub fn new(operation_id: OperationId) -> Self {
+        Self(operation_id)
+    }
+
+    pub fn operation_id(self) -> OperationId {
+        self.0
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct TurnId(Uuid);
+
+impl TurnId {
+    pub fn new(value: Uuid) -> Self {
+        Self(value)
+    }
+
+    pub fn value(self) -> Uuid {
+        self.0
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConversationState {
+    Open,
+    Closing,
+    Succeeded,
+    Cancelled,
+    Failed,
+    Indeterminate,
+}
+
+impl ConversationState {
+    pub fn terminal(self) -> bool {
+        match self {
+            Self::Open | Self::Closing => false,
+            Self::Succeeded | Self::Cancelled | Self::Failed | Self::Indeterminate => true,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TurnState {
+    Queued,
+    Started,
+    Completed,
+    Cancelled,
+    Discarded,
+    Failed,
+    Indeterminate,
+}
+
+impl TurnState {
+    pub fn terminal(self) -> bool {
+        match self {
+            Self::Queued | Self::Started => false,
+            Self::Completed
+            | Self::Cancelled
+            | Self::Discarded
+            | Self::Failed
+            | Self::Indeterminate => true,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct Conversation {
+    pub conversation_id: ConversationId,
+    pub project_id: ProjectId,
+    pub intent: OperationIntent,
+    pub session_id: SessionId,
+    pub state: ConversationState,
+    pub close_mode: Option<ConversationStopMode>,
+    pub terminal_outcome: Option<TerminalOutcome>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ConversationTurn {
+    pub conversation_id: ConversationId,
+    pub turn_id: TurnId,
+    pub position: u64,
+    pub prompt: String,
+    pub state: TurnState,
+    pub result: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case", tag = "kind", content = "data")]
+pub enum ConversationEventPayload {
+    Initialized {
+        session_id: SessionId,
+        model: String,
+        claude_version: Option<String>,
+    },
+    TurnQueued {
+        turn_id: TurnId,
+    },
+    TurnStarted {
+        turn_id: TurnId,
+    },
+    TurnAcknowledged {
+        turn_id: TurnId,
+    },
+    AssistantTextDelta {
+        turn_id: TurnId,
+        text: String,
+    },
+    TurnCompleted {
+        turn_id: TurnId,
+        result: String,
+    },
+    TurnCancelled {
+        turn_id: TurnId,
+        message: String,
+    },
+    TurnDiscarded {
+        turn_id: TurnId,
+        message: String,
+    },
+    TurnFailed {
+        turn_id: TurnId,
+        message: String,
+    },
+    TurnIndeterminate {
+        turn_id: TurnId,
+        message: String,
+    },
+    ConversationTerminal {
+        outcome: TerminalOutcome,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ConversationEvent {
+    pub conversation_id: ConversationId,
+    pub sequence: u64,
+    pub payload: ConversationEventPayload,
+}
+
+/// One durably normalized turn state observation and its ordered timeline event.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ConversationTurnObservation {
+    pub turn: ConversationTurn,
+    pub event: ConversationEvent,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ConversationStart {
+    pub request_id: RequestId,
+    pub project_id: ProjectId,
+    pub intent: OperationIntent,
+    pub turn_id: TurnId,
+    pub prompt: String,
+    pub review_profile: ReviewProfile,
+}
+
+impl ConversationStart {
+    pub fn validate(&self) -> Result<(), OperatorError> {
+        if self.prompt.is_empty() {
+            return Err(OperatorError::InvalidRequest(
+                "conversation first-turn prompt must not be empty".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ConversationSend {
+    pub conversation_id: ConversationId,
+    pub turn_id: TurnId,
+    pub prompt: String,
+}
+
+impl ConversationSend {
+    pub fn validate(&self) -> Result<(), OperatorError> {
+        if self.prompt.is_empty() {
+            return Err(OperatorError::InvalidRequest(
+                "conversation turn prompt must not be empty".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConversationStopMode {
+    Graceful,
+    Cancel,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ConversationWait {
+    pub conversation_id: ConversationId,
+    pub after_sequence: u64,
+    pub wait_millis: u64,
+}
+
+impl ConversationWait {
+    pub fn validate(&self) -> Result<(), OperatorError> {
+        i64::try_from(self.after_sequence).map_err(|_| {
+            OperatorError::InvalidRequest(
+                "conversation after_sequence exceeds the supported durable range".to_owned(),
+            )
+        })?;
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ConversationSnapshot {
+    pub conversation: Conversation,
+    pub turns: Vec<ConversationTurn>,
+    pub events: Vec<ConversationEvent>,
+}
+
+/// Facts atomically observed or persisted while admitting a conversation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ConversationStartAdmission {
+    Existing {
+        operation: Operation,
+        conversation: Conversation,
+        first_turn: ConversationTurn,
+        fingerprint: String,
+    },
+    ExistingOperation {
+        operation: Operation,
+        fingerprint: String,
+    },
+    MissingProject,
+    ActiveSession {
+        operation: Operation,
+    },
+    Inserted {
+        operation: Operation,
+        conversation: Conversation,
+        first_turn: ConversationTurn,
+    },
+}
+
+/// Facts atomically observed or persisted while admitting one conversation turn.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ConversationTurnAdmission {
+    Existing {
+        turn: ConversationTurn,
+        fingerprint: String,
+    },
+    MissingConversation,
+    Closed {
+        conversation: Conversation,
+    },
+    Inserted(ConversationTurn),
+}
+
+/// Facts atomically observed while closing durable turn admission.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ConversationCloseAdmission {
+    ClosedNow {
+        conversation: Conversation,
+        through_position: u64,
+    },
+    AlreadyClosing(Conversation),
+    EscalatedToCancel(Conversation),
+    Terminal(Conversation),
+}
+
+/// States whether a terminal fact proves that the current session writer exited.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SessionClaimDisposition {
+    /// The direct child was observed exited and no longer owns the writer claim.
+    ReleaseProvenWriter,
+    /// The terminal classification does not prove that the current writer exited.
+    RetainUnclassifiedWriter,
+}
+
 /// Facts atomically observed or persisted while admitting one operation request.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum OperationAdmission {
@@ -433,6 +718,13 @@ pub enum DaemonRequest {
     SessionInspect(SessionInspectRequest),
     InitiatorBindingRegister(InitiatorBindingRequest),
     SessionDecide(SessionDecisionRequest),
+    ConversationStart(ConversationStart),
+    ConversationSend(ConversationSend),
+    ConversationWait(ConversationWait),
+    ConversationStop {
+        conversation_id: ConversationId,
+        mode: ConversationStopMode,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -445,6 +737,7 @@ pub enum DaemonResponse {
     SessionEvidence(Vec<SessionEvidence>),
     BindingRegistration(BindingRegistration),
     SessionDecision(SessionDecision),
+    Conversation(ConversationSnapshot),
 }
 
 /// The local daemon response envelope. Its result preserves the causal refusal.
@@ -519,6 +812,54 @@ pub trait StatePort: Send + Sync {
         observed_version: Option<String>,
     ) -> Result<Operation, OperatorError>;
     fn recover_current_daemon_incomplete(&self) -> Result<(), OperatorError>;
+    fn persist_conversation_start(
+        &self,
+        request: &ConversationStart,
+        session_id: SessionId,
+        fingerprint: &str,
+    ) -> Result<ConversationStartAdmission, OperatorError>;
+    fn get_conversation(
+        &self,
+        conversation_id: ConversationId,
+    ) -> Result<Conversation, OperatorError>;
+    fn get_conversation_snapshot(
+        &self,
+        conversation_id: ConversationId,
+        after_sequence: u64,
+    ) -> Result<ConversationSnapshot, OperatorError>;
+    fn persist_conversation_turn(
+        &self,
+        request: &ConversationSend,
+        fingerprint: &str,
+    ) -> Result<ConversationTurnAdmission, OperatorError>;
+    fn record_conversation_turn_observation(
+        &self,
+        conversation_id: ConversationId,
+        turn_id: TurnId,
+        state: Option<TurnState>,
+        result: Option<String>,
+        payload: ConversationEventPayload,
+    ) -> Result<ConversationTurnObservation, OperatorError>;
+    fn record_conversation_initialization(
+        &self,
+        conversation_id: ConversationId,
+        session_id: SessionId,
+        model: String,
+        claude_version: Option<String>,
+    ) -> Result<ConversationEvent, OperatorError>;
+    fn close_conversation(
+        &self,
+        conversation_id: ConversationId,
+        mode: ConversationStopMode,
+    ) -> Result<ConversationCloseAdmission, OperatorError>;
+    fn terminalize_conversation(
+        &self,
+        conversation_id: ConversationId,
+        conversation_state: ConversationState,
+        operation_state: OperationState,
+        terminal: TerminalOutcome,
+        claim_disposition: SessionClaimDisposition,
+    ) -> Result<Conversation, OperatorError>;
     fn list_session_evidence(
         &self,
         project_id: &ProjectId,

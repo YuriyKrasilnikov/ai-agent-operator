@@ -5,7 +5,7 @@
 
 use std::{
     env,
-    io::{Read, Write},
+    io::{BufRead, Read, Write},
     path::Path,
     process::ExitCode,
     thread,
@@ -47,6 +47,12 @@ fn main() -> ExitCode {
     if arguments.as_slice() == ["--fixture_hold_stdout"] {
         thread::sleep(Duration::from_millis(200));
         return ExitCode::SUCCESS;
+    }
+    if arguments
+        .iter()
+        .any(|argument| argument == "--input-format")
+    {
+        return live_main(&arguments);
     }
     let invocation = match Invocation::parse(&arguments) {
         Ok(invocation) => invocation,
@@ -179,6 +185,230 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
     ExitCode::SUCCESS
+}
+
+fn live_main(arguments: &[String]) -> ExitCode {
+    let invocation = match LiveInvocation::parse(arguments) {
+        Ok(invocation) => invocation,
+        Err(error) => {
+            eprintln!("fake Claude: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if let Err(error) = record_live_spawn(arguments) {
+        eprintln!("fake Claude: {error}");
+        return ExitCode::FAILURE;
+    }
+    let stdin = std::io::stdin();
+    for line in stdin.lock().lines() {
+        let line = match line {
+            Ok(line) => line,
+            Err(error) => {
+                eprintln!("fake Claude: {error}");
+                return ExitCode::FAILURE;
+            }
+        };
+        let turn = match LiveTurn::parse(&line) {
+            Ok(turn) => turn,
+            Err(error) => {
+                eprintln!("fake Claude: {error}");
+                return ExitCode::FAILURE;
+            }
+        };
+        if let Err(error) = record_invocation(arguments, &turn.prompt) {
+            eprintln!("fake Claude: {error}");
+            return ExitCode::FAILURE;
+        }
+        if turn.prompt == "__fixture_live_invalid_json__" {
+            return match write_stdout_bytes(b"{invalid json}\n") {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(_) => ExitCode::FAILURE,
+            };
+        }
+        if turn.prompt == "__fixture_live_unexpected_exit__" {
+            return ExitCode::SUCCESS;
+        }
+        if turn.prompt == "__fixture_live_hold__" {
+            thread::sleep(Duration::from_secs(2));
+        }
+        let observed_session = if turn.prompt == "__fixture_live_session_mismatch__" {
+            eprintln!("fixture-live-stderr-marker");
+            "00000000-0000-4000-8000-000000000000".to_owned()
+        } else {
+            invocation.session.clone()
+        };
+        let observed_model = if turn.prompt == "__fixture_live_model_mismatch__" {
+            "other-model".to_owned()
+        } else {
+            invocation.model.clone()
+        };
+        let replayed_prompt = if turn.prompt == "__fixture_live_content_mismatch__" {
+            "different replayed content".to_owned()
+        } else {
+            turn.prompt.clone()
+        };
+        let observed_turn_uuid = if turn.prompt == "__fixture_live_uuid_mismatch__" {
+            "00000000-0000-4000-8000-000000000000".to_owned()
+        } else {
+            turn.uuid.clone()
+        };
+        if turn.prompt == "__fixture_live_lifecycle_order_mismatch__" {
+            return match write_event(
+                json!({"type":"command_lifecycle","command_uuid":observed_turn_uuid,"session_id":observed_session,"state":"started"}),
+            ) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(_) => ExitCode::FAILURE,
+            };
+        }
+        if write_event(json!({"type":"command_lifecycle","command_uuid":observed_turn_uuid,"session_id":observed_session,"state":"queued"})).is_err() {
+            return ExitCode::FAILURE;
+        }
+        if turn.prompt == "__fixture_live_result_without_started__" {
+            if write_event(json!({"type":"system","subtype":"init","session_id":observed_session,"model":observed_model,"claude_code_version":"fixture-1"})).is_err()
+                || write_event(json!({"type":"user","isReplay":true,"uuid":turn.uuid,"session_id":observed_session,"message":{"role":"user","content":[{"type":"text","text":replayed_prompt}]}})).is_err()
+            {
+                return ExitCode::FAILURE;
+            }
+            return match write_event(
+                json!({"type":"result","uuid":"22222222-2222-4222-8222-222222222222","is_error":false,"session_id":observed_session,"result":"fixture live result without started turn"}),
+            ) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(_) => ExitCode::FAILURE,
+            };
+        }
+        if write_event(json!({"type":"command_lifecycle","command_uuid":observed_turn_uuid,"session_id":observed_session,"state":"started"})).is_err()
+            || write_event(json!({"type":"system","subtype":"init","session_id":observed_session,"model":observed_model,"claude_code_version":"fixture-1"})).is_err()
+            || write_event(json!({"type":"user","isReplay":true,"uuid":turn.uuid,"session_id":observed_session,"message":{"role":"user","content":[{"type":"text","text":replayed_prompt}]}})).is_err()
+            || write_event(json!({"type":"assistant","uuid":"33333333-3333-4333-8333-333333333333","session_id":observed_session,"message":{"role":"assistant","content":[{"type":"tool_use","id":"fixture-tool-use","name":"Read","input":{}}]}})).is_err()
+        {
+            return ExitCode::FAILURE;
+        }
+        if turn.prompt == "__fixture_live_malformed_tool_result__" {
+            return match write_event(
+                json!({"type":"user","uuid":"44444444-4444-4444-8444-444444444444","session_id":observed_session,"message":{"role":"user","content":[{"type":"tool_result","content":"fixture Read output","is_error":false,"tool_use_id":"fixture-tool-use"}]}}),
+            ) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(_) => ExitCode::FAILURE,
+            };
+        }
+        if write_event(json!({"type":"user","uuid":"44444444-4444-4444-8444-444444444444","session_id":observed_session,"message":{"role":"user","content":[{"type":"tool_result","content":"fixture Read output","tool_use_id":"fixture-tool-use"}]}})).is_err() {
+            return ExitCode::FAILURE;
+        }
+        if write_event(json!({"type":"stream_event","uuid":"11111111-1111-4111-8111-111111111111","session_id":observed_session,"event":{"type":"content_block_delta","delta":{"type":"text_delta","text":format!("live: {}", turn.prompt)}}})).is_err() {
+            return ExitCode::FAILURE;
+        }
+        if turn.prompt == "__fixture_live_unknown_lifecycle__" {
+            return match write_event(
+                json!({"type":"command_lifecycle","command_uuid":turn.uuid,"session_id":observed_session,"state":"unknown"}),
+            ) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(_) => ExitCode::FAILURE,
+            };
+        }
+        if turn.prompt == "__fixture_live_provider_failure__" {
+            if write_event(json!({"type":"result","uuid":"22222222-2222-4222-8222-222222222222","is_error":true,"session_id":observed_session,"result":"fixture live provider failure"})).is_err() {
+                return ExitCode::FAILURE;
+            }
+            return ExitCode::SUCCESS;
+        }
+        if turn.prompt == "__fixture_live_hold_after_start__" {
+            thread::sleep(Duration::from_secs(2));
+        }
+        if write_event(json!({"type":"result","uuid":"22222222-2222-4222-8222-222222222222","is_error":false,"session_id":observed_session,"result":format!("live result: {}", turn.prompt)})).is_err()
+            || write_event(json!({"type":"command_lifecycle","command_uuid":turn.uuid,"session_id":observed_session,"state":"completed"})).is_err()
+        {
+            return ExitCode::FAILURE;
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+struct LiveInvocation {
+    session: String,
+    model: String,
+}
+
+impl LiveInvocation {
+    fn parse(arguments: &[String]) -> Result<Self, String> {
+        let prefix = [
+            "--print",
+            "--input-format",
+            "stream-json",
+            "--output-format",
+            "stream-json",
+            "--include-partial-messages",
+            "--replay-user-messages",
+            "--verbose",
+            "--model",
+            "opus",
+            "--effort",
+            "max",
+            "--permission-mode",
+            "dontAsk",
+            "--restricted",
+            "--safe-mode",
+            "--tools",
+            "Read,Glob,Grep",
+            "--allowedTools",
+            "Read,Glob,Grep",
+        ];
+        if arguments.len() != prefix.len() + 2
+            || !arguments[..prefix.len()]
+                .iter()
+                .map(String::as_str)
+                .eq(prefix)
+        {
+            return Err("Claude argv did not match the exact structured live profile".to_owned());
+        }
+        match arguments[prefix.len()].as_str() {
+            "--session-id" | "--resume" => Ok(Self {
+                session: arguments[prefix.len() + 1].clone(),
+                model: "opus".to_owned(),
+            }),
+            _ => Err("Claude argv did not select new or exact resume".to_owned()),
+        }
+    }
+}
+
+struct LiveTurn {
+    uuid: String,
+    prompt: String,
+}
+
+impl LiveTurn {
+    fn parse(line: &str) -> Result<Self, String> {
+        let value: serde_json::Value =
+            serde_json::from_str(line).map_err(|error| error.to_string())?;
+        if value.get("type").and_then(serde_json::Value::as_str) != Some("user") {
+            return Err("live input event was not a user message".to_owned());
+        }
+        let uuid = value
+            .get("uuid")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| "live input omitted uuid".to_owned())?
+            .to_owned();
+        let prompt = value
+            .get("message")
+            .and_then(serde_json::Value::as_object)
+            .and_then(|message| message.get("content"))
+            .and_then(serde_json::Value::as_array)
+            .and_then(|content| content.first())
+            .and_then(serde_json::Value::as_object)
+            .and_then(|block| block.get("text"))
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| "live input omitted text content".to_owned())?
+            .to_owned();
+        Ok(Self { uuid, prompt })
+    }
+}
+
+fn record_live_spawn(arguments: &[String]) -> Result<(), String> {
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(".aiop-fake-live-spawns.jsonl")
+        .map_err(|error| error.to_string())?;
+    writeln!(file, "{}", json!({"argv":arguments})).map_err(|error| error.to_string())
 }
 
 struct Invocation {

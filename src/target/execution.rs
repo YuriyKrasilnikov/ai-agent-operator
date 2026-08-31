@@ -5,10 +5,14 @@
 
 use std::{sync::atomic::Ordering, thread};
 
-use crate::contract::target::{TargetCommand, TargetOperationId, TargetOutcome, TargetPort};
+use crate::contract::target::{
+    TargetCommand, TargetLiveObservation, TargetLiveStart, TargetLiveStartError, TargetLiveStop,
+    TargetLiveTurn, TargetOperationId, TargetOutcome, TargetPort,
+};
 
 use super::{
     child::Children,
+    conversation::LiveRuntimes,
     launch,
     output::OutputPump,
     prompt_input,
@@ -18,6 +22,7 @@ use super::{
 #[derive(Clone, Default)]
 pub struct ClaudeTarget {
     children: Children,
+    live: LiveRuntimes,
 }
 
 impl TargetPort for ClaudeTarget {
@@ -77,7 +82,7 @@ impl TargetPort for ClaudeTarget {
         };
         match self.children.insert(command.operation_id, child) {
             Ok(_) => {}
-            Err(error) => return TargetOutcome::Indeterminate(error),
+            Err(error) => return TargetOutcome::Indeterminate(error.message().to_owned()),
         };
         if command
             .launch_report
@@ -109,6 +114,29 @@ impl TargetPort for ClaudeTarget {
 
     fn cancel(&self, operation_id: TargetOperationId) -> Result<(), String> {
         self.children.terminate(operation_id)
+    }
+    fn start_live(
+        &self,
+        start: TargetLiveStart,
+        observations: std::sync::mpsc::Sender<TargetLiveObservation>,
+    ) -> Result<(), TargetLiveStartError> {
+        self.live.start(self.children.clone(), start, observations)
+    }
+
+    fn send_live(
+        &self,
+        operation_id: TargetOperationId,
+        turn: TargetLiveTurn,
+    ) -> Result<(), String> {
+        self.live.send(operation_id, turn)
+    }
+
+    fn stop_live(
+        &self,
+        operation_id: TargetOperationId,
+        stop: TargetLiveStop,
+    ) -> Result<(), String> {
+        self.live.stop(&self.children, operation_id, stop)
     }
 }
 

@@ -14,8 +14,8 @@ use sha2::{Digest, Sha256};
 
 use crate::contract::{
     control::{
-        Operation, OperationId, OperationStart, OperationState, OperatorError, ProjectRegistration,
-        SessionId, StatePort, TerminalOutcome,
+        ConversationId, ConversationStopMode, Operation, OperationId, OperationStart,
+        OperationState, OperatorError, ProjectRegistration, SessionId, StatePort, TerminalOutcome,
     },
     target::{
         TargetCommand, TargetIntent, TargetLaunch, TargetOperationId, TargetOutcome, TargetPort,
@@ -24,7 +24,7 @@ use crate::contract::{
 };
 
 use super::{
-    admission, project,
+    admission, conversation, project,
     runtime::{CancellationOutcome, RuntimeGate},
     session_writer,
 };
@@ -305,15 +305,29 @@ impl OperationControl {
     }
 
     pub(super) fn cancel(&self, operation: OperationId) -> Result<Operation, OperatorError> {
+        let current = self.state.get_operation(operation)?;
+        if current.state.terminal() {
+            return Ok(current);
+        }
+        match self.state.get_conversation(ConversationId::new(operation)) {
+            Ok(_) => self.cancel_live_conversation(operation),
+            Err(OperatorError::UnknownOperation(_)) => self.cancel_one_shot(operation),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn cancel_live_conversation(&self, operation: OperationId) -> Result<Operation, OperatorError> {
+        conversation::stop(
+            self,
+            ConversationId::new(operation),
+            ConversationStopMode::Cancel,
+        )?;
+        self.wait_for_terminal_cancellation(operation)
+    }
+
+    fn cancel_one_shot(&self, operation: OperationId) -> Result<Operation, OperatorError> {
         match self.runtime.cancel(operation)? {
-            CancellationOutcome::Signalled => loop {
-                self.refusal()?;
-                let observed = self.state.get_operation(operation)?;
-                if observed.state.terminal() {
-                    return Ok(observed);
-                }
-                thread::sleep(OPERATION_STATE_POLL);
-            },
+            CancellationOutcome::Signalled => self.wait_for_terminal_cancellation(operation),
             CancellationOutcome::GateAbsent => {
                 let observed = self.state.get_operation(operation)?;
                 if observed.state.terminal() {
@@ -324,6 +338,20 @@ impl OperationControl {
                     ))
                 }
             }
+        }
+    }
+
+    fn wait_for_terminal_cancellation(
+        &self,
+        operation: OperationId,
+    ) -> Result<Operation, OperatorError> {
+        loop {
+            self.refusal()?;
+            let observed = self.state.get_operation(operation)?;
+            if observed.state.terminal() {
+                return Ok(observed);
+            }
+            thread::sleep(OPERATION_STATE_POLL);
         }
     }
 
@@ -354,7 +382,7 @@ impl OperationControl {
         }
     }
 
-    fn record_refusal(&self, error: OperatorError) {
+    pub(super) fn record_refusal(&self, error: OperatorError) {
         match self.refusal.set(error) {
             Ok(()) | Err(_) => {}
         }
