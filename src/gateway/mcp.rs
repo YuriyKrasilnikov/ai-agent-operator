@@ -21,8 +21,8 @@ use uuid::Uuid;
 
 use crate::contract::control::{
     ConversationId, ConversationSend, ConversationStart, ConversationStopMode, ConversationWait,
-    DaemonRequest, OperationIntent, OperationStart, ProjectId, ProjectRegistration, RequestId,
-    ReviewProfile, SessionId, TurnId,
+    DaemonRequest, OperationDiagnosticsRequest, OperationId, OperationIntent, OperationStart,
+    ProjectId, ProjectRegistration, RequestId, ReviewProfile, SessionId, TurnId,
 };
 
 use super::{GatewayError, client, session};
@@ -84,6 +84,10 @@ fn tools() -> Result<ListToolsResult, rmcp::ErrorData> {
                 "operation_wait",
                 "Wait for current or terminal operation state.",
             )?,
+            tool::<OperationDiagnosticsInput>(
+                "operation_diagnostics",
+                "Read durable one-shot provider diagnostics after a cursor.",
+            )?,
             tool::<OperationCancelInput>(
                 "operation_cancel",
                 "Request direct-child cancellation and observe its terminal state.",
@@ -143,6 +147,9 @@ fn dispatch(endpoint: &std::path::Path, request: CallToolRequestParams) -> CallT
         "operation_get" => decode::<OperationGetInput>(&request.arguments).and_then(get_operation),
         "operation_wait" => {
             decode::<OperationWaitInput>(&request.arguments).and_then(wait_operation)
+        }
+        "operation_diagnostics" => {
+            decode::<OperationDiagnosticsInput>(&request.arguments).and_then(operation_diagnostics)
         }
         "operation_cancel" => {
             decode::<OperationCancelInput>(&request.arguments).and_then(cancel_operation)
@@ -230,6 +237,15 @@ fn wait_operation(input: OperationWaitInput) -> Result<DaemonRequest, GatewayErr
         )?),
         wait_millis: input.wait_millis,
     })
+}
+fn operation_diagnostics(input: OperationDiagnosticsInput) -> Result<DaemonRequest, GatewayError> {
+    Ok(DaemonRequest::OperationDiagnostics(
+        OperationDiagnosticsRequest {
+            operation_id: OperationId::new_exact(parse_uuid(&input.operation_id, "operation_id")?),
+            after_diagnostic_sequence: input.after_diagnostic_sequence,
+            wait_millis: input.wait_millis,
+        },
+    ))
 }
 fn cancel_operation(input: OperationCancelInput) -> Result<DaemonRequest, GatewayError> {
     Ok(DaemonRequest::OperationCancel {
@@ -347,6 +363,13 @@ struct OperationGetInput {
 #[serde(deny_unknown_fields)]
 struct OperationWaitInput {
     operation_id: String,
+    wait_millis: u64,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct OperationDiagnosticsInput {
+    operation_id: String,
+    after_diagnostic_sequence: u64,
     wait_millis: u64,
 }
 #[derive(Deserialize, JsonSchema)]

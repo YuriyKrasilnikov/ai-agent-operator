@@ -58,7 +58,8 @@ fn fixture() -> (TempDir, OperationControl, ProjectRegistration) {
 
 struct TerminalFailingState {
     inner: SqliteState,
-    fail_once: AtomicBool,
+    fail_terminal_once: AtomicBool,
+    fail_diagnostic_once: AtomicBool,
 }
 
 impl StatePort for TerminalFailingState {
@@ -103,13 +104,36 @@ impl StatePort for TerminalFailingState {
         model: Option<String>,
         version: Option<String>,
     ) -> Result<Operation, aiop::contract::control::OperatorError> {
-        if next.terminal() && self.fail_once.swap(false, Ordering::SeqCst) {
+        if next.terminal() && self.fail_terminal_once.swap(false, Ordering::SeqCst) {
             return Err(aiop::contract::control::OperatorError::State(
                 "injected terminal transition failure".to_owned(),
             ));
         }
         self.inner
             .transition(operation, next, terminal, session, model, version)
+    }
+    fn record_operation_diagnostic(
+        &self,
+        operation_id: aiop::contract::control::OperationId,
+        payload: aiop::contract::control::OperationDiagnosticPayload,
+    ) -> Result<aiop::contract::control::OperationDiagnostic, aiop::contract::control::OperatorError>
+    {
+        if self.fail_diagnostic_once.swap(false, Ordering::SeqCst) {
+            return Err(aiop::contract::control::OperatorError::State(
+                "injected diagnostic persistence failure".to_owned(),
+            ));
+        }
+        self.inner
+            .record_operation_diagnostic(operation_id, payload)
+    }
+    fn get_operation_diagnostics(
+        &self,
+        operation_id: aiop::contract::control::OperationId,
+        after_diagnostic_sequence: u64,
+    ) -> Result<aiop::contract::control::OperationDiagnostics, aiop::contract::control::OperatorError>
+    {
+        self.inner
+            .get_operation_diagnostics(operation_id, after_diagnostic_sequence)
     }
     fn recover_current_daemon_incomplete(
         &self,
@@ -269,9 +293,10 @@ fn terminal_state_failure_refuses_the_current_daemon() {
     let state = Arc::new(TerminalFailingState {
         inner: SqliteState::open(&directory.path().join("operator.sqlite"))
             .expect("SQLite state opens"),
-        fail_once: AtomicBool::new(true),
+        fail_terminal_once: AtomicBool::new(true),
+        fail_diagnostic_once: AtomicBool::new(false),
     });
-    let control = OperationControl::new(state, Arc::new(ClaudeTarget::default()));
+    let control = OperationControl::new(state.clone(), Arc::new(ClaudeTarget::default()));
     let project = ProjectRegistration {
         project_id: ProjectId::new("state-failure-project".to_owned())
             .expect("project id is valid"),
@@ -302,6 +327,51 @@ fn terminal_state_failure_refuses_the_current_daemon() {
     }
 }
 
+#[test]
+fn diagnostic_state_failure_cancels_without_terminalizing_and_latches_original_error() {
+    let directory = TempDir::new().expect("temporary test directory is available");
+    let state = Arc::new(TerminalFailingState {
+        inner: SqliteState::open(&directory.path().join("operator.sqlite"))
+            .expect("SQLite state opens"),
+        fail_terminal_once: AtomicBool::new(false),
+        fail_diagnostic_once: AtomicBool::new(true),
+    });
+    let control = OperationControl::new(state.clone(), Arc::new(ClaudeTarget::default()));
+    let project = ProjectRegistration {
+        project_id: ProjectId::new("diagnostic-state-failure-project".to_owned())
+            .expect("project id is valid"),
+        working_directory: directory.path().to_path_buf(),
+        claude_executable: Path::new(env!("CARGO_BIN_EXE_aiop-fake-claude")).to_path_buf(),
+        expected_opus_model: "opus".to_owned(),
+    };
+    control
+        .handle(DaemonRequest::ProjectRegister(project.clone()))
+        .expect("project registers");
+    let accepted = operation(
+        control
+            .handle(DaemonRequest::OperationStart(start(
+                &project,
+                "__fixture_diagnostics__",
+                OperationIntent::New,
+            )))
+            .expect("operation reaches running before diagnostic persistence"),
+    );
+    let refusal = control.handle(DaemonRequest::OperationWait {
+        operation_id: accepted.operation_id,
+        wait_millis: 5_000,
+    });
+    match refusal {
+        Err(aiop::contract::control::OperatorError::State(message))
+            if message == "injected diagnostic persistence failure" => {}
+        other => panic!("diagnostic state failure must remain the daemon refusal: {other:?}"),
+    }
+    let durable = state
+        .get_operation(accepted.operation_id)
+        .expect("refused daemon retains the durable operation fact");
+    assert!(!durable.state.terminal());
+    assert_eq!(durable.terminal_outcome, None);
+}
+
 fn start(project: &ProjectRegistration, prompt: &str, intent: OperationIntent) -> OperationStart {
     OperationStart {
         request_id: RequestId::new(Uuid::new_v4()),
@@ -322,7 +392,8 @@ fn operation(response: DaemonResponse) -> Operation {
         | DaemonResponse::SessionEvidence(_)
         | DaemonResponse::BindingRegistration(_)
         | DaemonResponse::SessionDecision(_)
-        | DaemonResponse::Conversation(_) => {
+        | DaemonResponse::Conversation(_)
+        | DaemonResponse::OperationDiagnostics(_) => {
             panic!("operation request must not return a V0.2 session response")
         }
     }
@@ -1207,7 +1278,8 @@ fn operation_from_mcp(response: serde_json::Value) -> Operation {
         | DaemonResponse::SessionEvidence(_)
         | DaemonResponse::BindingRegistration(_)
         | DaemonResponse::SessionDecision(_)
-        | DaemonResponse::Conversation(_) => {
+        | DaemonResponse::Conversation(_)
+        | DaemonResponse::OperationDiagnostics(_) => {
             panic!("MCP response must not be a V0.2 session response")
         }
     }

@@ -396,6 +396,202 @@ pub struct Operation {
     pub terminal_outcome: Option<TerminalOutcome>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct RetryAttempt(u64);
+
+impl RetryAttempt {
+    pub fn new(value: u64) -> Result<Self, OperatorError> {
+        if value == 0 {
+            return Err(OperatorError::InvalidRequest(
+                "retry attempt must be greater than zero".to_owned(),
+            ));
+        }
+        Ok(Self(value))
+    }
+
+    pub fn value(self) -> u64 {
+        self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for RetryAttempt {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Self::new(u64::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct RetryLimit(u64);
+
+impl RetryLimit {
+    pub fn new(value: u64) -> Result<Self, OperatorError> {
+        if value == 0 {
+            return Err(OperatorError::InvalidRequest(
+                "retry limit must be greater than zero".to_owned(),
+            ));
+        }
+        Ok(Self(value))
+    }
+
+    pub fn value(self) -> u64 {
+        self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for RetryLimit {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Self::new(u64::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct RetryDelayMillis(u64);
+
+impl RetryDelayMillis {
+    pub fn new(value: u64) -> Result<Self, OperatorError> {
+        Ok(Self(value))
+    }
+
+    pub fn value(self) -> u64 {
+        self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for RetryDelayMillis {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Self::new(u64::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case", tag = "kind", content = "data")]
+pub enum OperationDiagnosticPayload {
+    ProviderRetrying(ProviderRetrying),
+    AuthenticationFailed,
+    DiagnosticUnclassified,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ProviderRetrying {
+    attempt: RetryAttempt,
+    max_retries: RetryLimit,
+    retry_delay_ms: RetryDelayMillis,
+}
+
+impl ProviderRetrying {
+    pub fn new(
+        attempt: RetryAttempt,
+        max_retries: RetryLimit,
+        retry_delay_ms: RetryDelayMillis,
+    ) -> Result<Self, OperatorError> {
+        if attempt.value() > max_retries.value() {
+            return Err(OperatorError::InvalidRequest(
+                "retry attempt must not exceed retry limit".to_owned(),
+            ));
+        }
+        Ok(Self {
+            attempt,
+            max_retries,
+            retry_delay_ms,
+        })
+    }
+
+    pub fn attempt(&self) -> RetryAttempt {
+        self.attempt
+    }
+
+    pub fn max_retries(&self) -> RetryLimit {
+        self.max_retries
+    }
+
+    pub fn retry_delay_ms(&self) -> RetryDelayMillis {
+        self.retry_delay_ms
+    }
+}
+
+impl OperationDiagnosticPayload {
+    pub fn provider_retrying(
+        attempt: RetryAttempt,
+        max_retries: RetryLimit,
+        retry_delay_ms: RetryDelayMillis,
+    ) -> Result<Self, OperatorError> {
+        ProviderRetrying::new(attempt, max_retries, retry_delay_ms).map(Self::ProviderRetrying)
+    }
+
+    pub fn validate(&self) -> Result<(), OperatorError> {
+        match self {
+            Self::ProviderRetrying(payload) => {
+                ProviderRetrying::new(payload.attempt, payload.max_retries, payload.retry_delay_ms)
+                    .map(|_| ())
+            }
+            Self::AuthenticationFailed | Self::DiagnosticUnclassified => Ok(()),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind", content = "data")]
+enum OperationDiagnosticPayloadWire {
+    ProviderRetrying {
+        attempt: RetryAttempt,
+        max_retries: RetryLimit,
+        retry_delay_ms: RetryDelayMillis,
+    },
+    AuthenticationFailed,
+    DiagnosticUnclassified,
+}
+
+impl<'de> Deserialize<'de> for OperationDiagnosticPayload {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let payload = match OperationDiagnosticPayloadWire::deserialize(deserializer)? {
+            OperationDiagnosticPayloadWire::ProviderRetrying {
+                attempt,
+                max_retries,
+                retry_delay_ms,
+            } => Self::provider_retrying(attempt, max_retries, retry_delay_ms)
+                .map_err(serde::de::Error::custom)?,
+            OperationDiagnosticPayloadWire::AuthenticationFailed => Self::AuthenticationFailed,
+            OperationDiagnosticPayloadWire::DiagnosticUnclassified => Self::DiagnosticUnclassified,
+        };
+        payload.validate().map_err(serde::de::Error::custom)?;
+        Ok(payload)
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct OperationDiagnostic {
+    pub operation_id: OperationId,
+    pub diagnostic_sequence: u64,
+    pub payload: OperationDiagnosticPayload,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct OperationDiagnosticsRequest {
+    pub operation_id: OperationId,
+    pub after_diagnostic_sequence: u64,
+    pub wait_millis: u64,
+}
+
+impl OperationDiagnosticsRequest {
+    pub fn validate(&self) -> Result<(), OperatorError> {
+        i64::try_from(self.after_diagnostic_sequence).map_err(|_| {
+            OperatorError::InvalidRequest(
+                "diagnostic cursor exceeds the supported durable range".to_owned(),
+            )
+        })?;
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct OperationDiagnostics {
+    pub operation: Operation,
+    pub diagnostics: Vec<OperationDiagnostic>,
+}
+
 /// A durable live conversation has the same identity as its owning operation.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(transparent)]
@@ -711,6 +907,7 @@ pub enum DaemonRequest {
         operation_id: OperationId,
         wait_millis: u64,
     },
+    OperationDiagnostics(OperationDiagnosticsRequest),
     OperationCancel {
         operation_id: OperationId,
     },
@@ -733,6 +930,7 @@ pub enum DaemonResponse {
     Project(ProjectRegistration),
     Projects(Vec<ProjectRegistration>),
     Operation(Operation),
+    OperationDiagnostics(OperationDiagnostics),
     SessionInventory(Vec<SessionEvidence>),
     SessionEvidence(Vec<SessionEvidence>),
     BindingRegistration(BindingRegistration),
@@ -755,6 +953,8 @@ pub enum OperatorError {
     UnknownProject(String),
     #[error("operation is unknown: {0}")]
     UnknownOperation(String),
+    #[error("operation diagnostics are unavailable: {0}")]
+    DiagnosticsUnavailable(String),
     #[error("conflict: {0}")]
     Conflict(String),
     #[error("session cannot be classified after daemon restart: {0}")]
@@ -811,6 +1011,16 @@ pub trait StatePort: Send + Sync {
         observed_model: Option<String>,
         observed_version: Option<String>,
     ) -> Result<Operation, OperatorError>;
+    fn record_operation_diagnostic(
+        &self,
+        operation_id: OperationId,
+        payload: OperationDiagnosticPayload,
+    ) -> Result<OperationDiagnostic, OperatorError>;
+    fn get_operation_diagnostics(
+        &self,
+        operation_id: OperationId,
+        after_diagnostic_sequence: u64,
+    ) -> Result<OperationDiagnostics, OperatorError>;
     fn recover_current_daemon_incomplete(&self) -> Result<(), OperatorError>;
     fn persist_conversation_start(
         &self,

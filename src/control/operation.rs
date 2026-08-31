@@ -14,12 +14,13 @@ use sha2::{Digest, Sha256};
 
 use crate::contract::{
     control::{
-        ConversationId, ConversationStopMode, Operation, OperationId, OperationStart,
-        OperationState, OperatorError, ProjectRegistration, SessionId, StatePort, TerminalOutcome,
+        ConversationId, ConversationStopMode, Operation, OperationDiagnosticPayload, OperationId,
+        OperationStart, OperationState, OperatorError, ProjectRegistration, RetryAttempt,
+        RetryDelayMillis, RetryLimit, SessionId, StatePort, TerminalOutcome,
     },
     target::{
-        TargetCommand, TargetIntent, TargetLaunch, TargetOperationId, TargetOutcome, TargetPort,
-        TargetSessionId,
+        TargetCommand, TargetDiagnostic, TargetIntent, TargetLaunch, TargetOperationId,
+        TargetOutcome, TargetPort, TargetSessionId,
     },
 };
 
@@ -224,6 +225,9 @@ impl OperationControl {
         launch_report: mpsc::Sender<TargetLaunch>,
         running_permission: mpsc::Receiver<Result<(), String>>,
     ) -> Result<WorkerCompletion, OperatorError> {
+        let (diagnostic_sender, diagnostic_receiver) = mpsc::channel();
+        let recorder =
+            self.start_diagnostic_recorder(operation.operation_id, diagnostic_receiver)?;
         let command = TargetCommand {
             operation_id: TargetOperationId(operation.operation_id.value()),
             working_directory: project.working_directory,
@@ -233,10 +237,21 @@ impl OperationControl {
             session_id: TargetSessionId(operation.session_id.value()),
             prompt: start.prompt,
             cancel_requested: cancel,
+            diagnostics: diagnostic_sender,
             launch_report,
             running_permission,
         };
-        match self.target.execute(command) {
+        let target_outcome = self.target.execute(command);
+        match recorder.join() {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => return Err(error),
+            Err(_) => {
+                return Err(OperatorError::State(
+                    "operation diagnostic recorder panicked".to_owned(),
+                ));
+            }
+        }
+        match target_outcome {
             TargetOutcome::SpawnFailed(_) => Ok(WorkerCompletion::Normal),
             TargetOutcome::Success(success) => self
                 .transition(
@@ -286,6 +301,41 @@ impl OperationControl {
                 )
                 .map(|()| WorkerCompletion::Normal),
         }
+    }
+
+    fn start_diagnostic_recorder(
+        &self,
+        operation_id: OperationId,
+        receiver: mpsc::Receiver<TargetDiagnostic>,
+    ) -> Result<thread::JoinHandle<Result<(), OperatorError>>, OperatorError> {
+        let state = Arc::clone(&self.state);
+        let runtime = self.runtime.clone();
+        thread::Builder::new()
+            .name(format!("aiop-diagnostics-{}", operation_id.value()))
+            .spawn(move || {
+                while let Ok(diagnostic) = receiver.recv() {
+                    let payload = normalize_diagnostic(diagnostic);
+                    if let Err(error) = state.record_operation_diagnostic(operation_id, payload) {
+                        match runtime.cancel(operation_id) {
+                            Ok(CancellationOutcome::Signalled) => return Err(error),
+                            Ok(CancellationOutcome::GateAbsent) => {
+                                return Err(OperatorError::State(format!(
+                                    "{error}; diagnostic persistence failed after the exact runtime gate disappeared"
+                                )));
+                            }
+                            Err(signal_error) => {
+                                return Err(OperatorError::State(format!(
+                                    "{error}; diagnostic persistence cancellation signal failed: {signal_error}"
+                                )));
+                            }
+                        }
+                    }
+                }
+                Ok(())
+            })
+            .map_err(|error| {
+                OperatorError::State(format!("operation diagnostic recorder could not start: {error}"))
+            })
     }
 
     fn transition(
@@ -385,6 +435,38 @@ impl OperationControl {
     pub(super) fn record_refusal(&self, error: OperatorError) {
         match self.refusal.set(error) {
             Ok(()) | Err(_) => {}
+        }
+    }
+}
+
+fn normalize_diagnostic(diagnostic: TargetDiagnostic) -> OperationDiagnosticPayload {
+    match diagnostic {
+        TargetDiagnostic::ProviderRetrying {
+            attempt,
+            max_retries,
+            retry_delay_ms,
+        } => match (
+            RetryAttempt::new(attempt),
+            RetryLimit::new(max_retries),
+            RetryDelayMillis::new(retry_delay_ms),
+        ) {
+            (Ok(attempt), Ok(max_retries), Ok(retry_delay_ms)) => {
+                match OperationDiagnosticPayload::provider_retrying(
+                    attempt,
+                    max_retries,
+                    retry_delay_ms,
+                ) {
+                    Ok(payload) => payload,
+                    Err(_) => OperationDiagnosticPayload::DiagnosticUnclassified,
+                }
+            }
+            (Err(_), _, _) | (_, Err(_), _) | (_, _, Err(_)) => {
+                OperationDiagnosticPayload::DiagnosticUnclassified
+            }
+        },
+        TargetDiagnostic::AuthenticationFailed => OperationDiagnosticPayload::AuthenticationFailed,
+        TargetDiagnostic::DiagnosticUnclassified => {
+            OperationDiagnosticPayload::DiagnosticUnclassified
         }
     }
 }

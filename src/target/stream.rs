@@ -5,7 +5,7 @@
 
 use serde_json::Value;
 
-use crate::contract::target::{TargetCommand, TargetSessionId, TargetSuccess};
+use crate::contract::target::{TargetCommand, TargetDiagnostic, TargetSessionId, TargetSuccess};
 
 #[derive(Debug)]
 pub enum InterpretationError {
@@ -30,6 +30,12 @@ impl Evidence {
         let event: Value = serde_json::from_str(line).map_err(|error| {
             InterpretationError::Ambiguous(format!("Claude emitted invalid stream JSON: {error}"))
         })?;
+        if let Some(diagnostic) = diagnostic(&event)
+            && command.diagnostics.send(diagnostic).is_err()
+        {
+            // Control has already retained the state failure and signalled the
+            // exact runtime gate. Terminal classification remains its concern.
+        }
         match (
             event.get("type").and_then(Value::as_str),
             event.get("subtype").and_then(Value::as_str),
@@ -110,6 +116,44 @@ impl Evidence {
             }
         }
         Ok(())
+    }
+}
+
+fn diagnostic(event: &Value) -> Option<TargetDiagnostic> {
+    match (
+        event.get("type").and_then(Value::as_str),
+        event.get("subtype").and_then(Value::as_str),
+    ) {
+        (Some("system"), Some("api_retry")) => Some(retry_diagnostic(event)),
+        (Some("assistant"), _)
+            if event.get("is_api_error_message").and_then(Value::as_bool) == Some(true) =>
+        {
+            match event.get("error") {
+                Some(Value::String(error)) if error == "authentication_failed" => {
+                    Some(TargetDiagnostic::AuthenticationFailed)
+                }
+                _ => Some(TargetDiagnostic::DiagnosticUnclassified),
+            }
+        }
+        _ => None,
+    }
+}
+
+fn retry_diagnostic(event: &Value) -> TargetDiagnostic {
+    let attempt = event.get("attempt").and_then(Value::as_u64);
+    let max_retries = event.get("max_retries").and_then(Value::as_u64);
+    let retry_delay_ms = event.get("retry_delay_ms").and_then(Value::as_u64);
+    match (attempt, max_retries, retry_delay_ms) {
+        (Some(attempt), Some(max_retries), Some(retry_delay_ms))
+            if attempt > 0 && max_retries > 0 && attempt <= max_retries =>
+        {
+            TargetDiagnostic::ProviderRetrying {
+                attempt,
+                max_retries,
+                retry_delay_ms,
+            }
+        }
+        _ => TargetDiagnostic::DiagnosticUnclassified,
     }
 }
 

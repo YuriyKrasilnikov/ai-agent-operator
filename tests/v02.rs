@@ -166,7 +166,8 @@ fn operation(response: DaemonResponse) -> Operation {
         | DaemonResponse::SessionEvidence(_)
         | DaemonResponse::BindingRegistration(_)
         | DaemonResponse::SessionDecision(_)
-        | DaemonResponse::Conversation(_) => {
+        | DaemonResponse::Conversation(_)
+        | DaemonResponse::OperationDiagnostics(_) => {
             panic!("operation request returned a non-operation payload")
         }
     }
@@ -181,7 +182,8 @@ fn decision(response: DaemonResponse) -> SessionDecision {
         | DaemonResponse::SessionInventory(_)
         | DaemonResponse::SessionEvidence(_)
         | DaemonResponse::BindingRegistration(_)
-        | DaemonResponse::Conversation(_) => {
+        | DaemonResponse::Conversation(_)
+        | DaemonResponse::OperationDiagnostics(_) => {
             panic!("session decision request returned another payload")
         }
     }
@@ -197,7 +199,8 @@ fn evidence(response: DaemonResponse) -> Vec<SessionEvidence> {
         | DaemonResponse::Operation(_)
         | DaemonResponse::BindingRegistration(_)
         | DaemonResponse::SessionDecision(_)
-        | DaemonResponse::Conversation(_) => {
+        | DaemonResponse::Conversation(_)
+        | DaemonResponse::OperationDiagnostics(_) => {
             panic!("session evidence request returned another payload")
         }
     }
@@ -403,7 +406,8 @@ fn exact_session_decisions_use_only_durable_operator_evidence_and_bindings() {
         | DaemonResponse::SessionInventory(_)
         | DaemonResponse::SessionEvidence(_)
         | DaemonResponse::SessionDecision(_)
-        | DaemonResponse::Conversation(_) => {
+        | DaemonResponse::Conversation(_)
+        | DaemonResponse::OperationDiagnostics(_) => {
             panic!("binding registration returned another payload")
         }
     }
@@ -428,7 +432,8 @@ fn exact_session_decisions_use_only_durable_operator_evidence_and_bindings() {
         | DaemonResponse::SessionInventory(_)
         | DaemonResponse::SessionEvidence(_)
         | DaemonResponse::SessionDecision(_)
-        | DaemonResponse::Conversation(_) => {
+        | DaemonResponse::Conversation(_)
+        | DaemonResponse::OperationDiagnostics(_) => {
             panic!("idempotent binding registration returned another payload")
         }
     }

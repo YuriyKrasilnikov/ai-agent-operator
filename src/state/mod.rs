@@ -6,6 +6,7 @@
 mod conversation;
 mod conversation_timeline;
 mod conversation_turn;
+mod diagnostic;
 mod initiator_binding;
 mod operation;
 mod ownership;
@@ -21,7 +22,8 @@ use crate::contract::control::{
     ConversationStart, ConversationStartAdmission, ConversationState, ConversationStopMode,
     ConversationTurnAdmission, ConversationTurnObservation, InitiatorAgentIdentity,
     InitiatorBinding, InitiatorIdentity, InitiatorSessionIdentity, Operation, OperationAdmission,
-    OperationId, OperationStart, OperationState, OperatorError, ProjectId, ProjectRegistration,
+    OperationDiagnostic, OperationDiagnosticPayload, OperationDiagnostics, OperationId,
+    OperationStart, OperationState, OperatorError, ProjectId, ProjectRegistration,
     SessionClaimDisposition, SessionEvidence, SessionId, StatePort, TerminalOutcome, TurnId,
     TurnState,
 };
@@ -83,6 +85,20 @@ impl StatePort for SqliteState {
             observed_model,
             observed_version,
         )
+    }
+    fn record_operation_diagnostic(
+        &self,
+        operation_id: OperationId,
+        payload: OperationDiagnosticPayload,
+    ) -> Result<OperationDiagnostic, OperatorError> {
+        diagnostic::record(&self.adapter, operation_id, payload)
+    }
+    fn get_operation_diagnostics(
+        &self,
+        operation_id: OperationId,
+        after_diagnostic_sequence: u64,
+    ) -> Result<OperationDiagnostics, OperatorError> {
+        diagnostic::snapshot(&self.adapter, operation_id, after_diagnostic_sequence)
     }
     fn recover_current_daemon_incomplete(&self) -> Result<(), OperatorError> {
         conversation::recover(&self.adapter)

@@ -3,7 +3,7 @@
 
 //! SS03: operation, idempotency, transition, and recovery persistence.
 use super::{
-    project, session_claim,
+    diagnostic, project, session_claim,
     sqlite::{Adapter, decode, encode, sql_error},
 };
 use crate::contract::control::{
@@ -89,6 +89,7 @@ pub(crate) fn persist_admission(
             )
             .map_err(sql_error)?;
         statement.next().map_err(sql_error)?;
+        diagnostic::create_coverage(connection, operation.operation_id)?;
         session_claim::claim(connection, &session_key, &operation_key)?;
         Ok(OperationAdmission::Inserted(operation))
     })

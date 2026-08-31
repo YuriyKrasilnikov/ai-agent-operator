@@ -552,6 +552,13 @@ pub(super) fn find(
     }
 }
 
+pub(crate) fn exists(
+    connection: &ConnectionThreadSafe,
+    operation_id: crate::contract::control::OperationId,
+) -> Result<bool, OperatorError> {
+    Ok(find(connection, ConversationId::new(operation_id))?.is_some())
+}
+
 fn insert_conversation(
     connection: &ConnectionThreadSafe,
     conversation: &Conversation,

@@ -39,8 +39,24 @@ pub struct TargetCommand {
     pub session_id: TargetSessionId,
     pub prompt: String,
     pub cancel_requested: Arc<AtomicBool>,
+    /// The consumed one-shot command owns the only producer for normalized
+    /// diagnostics. Target must not retain this sender after `execute` returns.
+    pub diagnostics: Sender<TargetDiagnostic>,
     pub launch_report: Sender<TargetLaunch>,
     pub running_permission: Receiver<Result<(), String>>,
+}
+
+/// Provider-neutral, machine-readable evidence observed from the direct
+/// one-shot child. Control owns durable recording and sequence allocation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TargetDiagnostic {
+    ProviderRetrying {
+        attempt: u64,
+        max_retries: u64,
+        retry_delay_ms: u64,
+    },
+    AuthenticationFailed,
+    DiagnosticUnclassified,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

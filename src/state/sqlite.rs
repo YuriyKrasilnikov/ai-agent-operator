@@ -34,6 +34,8 @@ impl Adapter {
             "CREATE TABLE IF NOT EXISTS conversations (conversation_id TEXT PRIMARY KEY NOT NULL, operation_id TEXT UNIQUE NOT NULL, record_json TEXT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS conversation_turns (conversation_id TEXT NOT NULL, turn_id TEXT NOT NULL, position INTEGER NOT NULL, fingerprint TEXT NOT NULL, record_json TEXT NOT NULL, PRIMARY KEY (conversation_id, turn_id), UNIQUE (conversation_id, position))",
             "CREATE TABLE IF NOT EXISTS conversation_events (conversation_id TEXT NOT NULL, sequence INTEGER NOT NULL, record_json TEXT NOT NULL, PRIMARY KEY (conversation_id, sequence))",
+            "CREATE TABLE IF NOT EXISTS operation_diagnostic_coverage (operation_id TEXT PRIMARY KEY NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS operation_diagnostics (operation_id TEXT NOT NULL, diagnostic_sequence INTEGER NOT NULL, record_json TEXT NOT NULL, PRIMARY KEY (operation_id, diagnostic_sequence))",
         ] {
             connection.execute(schema).map_err(sql_error)?;
         }

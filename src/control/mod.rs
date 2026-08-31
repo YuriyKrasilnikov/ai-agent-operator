@@ -11,6 +11,7 @@ pub mod ingress;
 
 mod admission;
 mod conversation;
+mod diagnostic;
 mod initiator_binding;
 mod operation;
 mod project;
@@ -57,6 +58,9 @@ impl OperationControl {
             } => Ok(DaemonResponse::Operation(
                 self.wait(operation_id, wait_millis)?,
             )),
+            DaemonRequest::OperationDiagnostics(request) => Ok(
+                DaemonResponse::OperationDiagnostics(self.diagnostics(request)?),
+            ),
             DaemonRequest::OperationCancel { operation_id } => {
                 Ok(DaemonResponse::Operation(self.cancel(operation_id)?))
             }

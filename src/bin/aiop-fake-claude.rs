@@ -117,6 +117,20 @@ fn main() -> ExitCode {
     {
         return ExitCode::FAILURE;
     }
+    if prompt == "__fixture_diagnostics__" {
+        for event in [
+            json!({"type":"system","subtype":"api_retry","attempt":1,"max_retries":2,"retry_delay_ms":0,"error":"unknown"}),
+            json!({"type":"assistant","is_api_error_message":true,"error":"authentication_failed","message":{"role":"assistant","content":"not persisted"}}),
+            json!({"type":"system","subtype":"api_retry","attempt":0,"max_retries":2,"retry_delay_ms":1}),
+            json!({"type":"telemetry","error":"unknown"}),
+            json!({"type":"assistant","text":"ordinary assistant output"}),
+        ] {
+            if write_event(event).is_err() {
+                return ExitCode::FAILURE;
+            }
+        }
+        thread::sleep(Duration::from_millis(250));
+    }
     if prompt == "__fixture_terminal_failure__" {
         eprintln!("fixture provider diagnostic");
         if write_event(json!({"type":"result","is_error":true,"session_id":invocation.session,"result":"fixture provider rejected review"})).is_err() { return ExitCode::FAILURE; }

@@ -4,10 +4,11 @@ AI Agent Operator lets a local MCP client start one persistent Claude Opus
 conversation through a separately running durable daemon, receive persisted
 text deltas and turn results, submit additional turns to the same exact Claude
 session, and reconnect its MCP projection without losing the durable timeline.
-A client can also
-inspect successful operator-owned session evidence, bind an explicit initiator
-identity to one evidenced session, and obtain a side-effect-free
-`new | resume_exact | refuse` decision.
+A second MCP client can also observe durable retry or authentication
+diagnostics from the exact one-shot Claude child without launching a preflight
+or inferring a cause. A client can inspect successful operator-owned session
+evidence, bind an explicit initiator identity to one evidenced session, and
+obtain a side-effect-free `new | resume_exact | refuse` decision.
 
 The daemon, rather than the MCP client, owns the Claude child and the SQLite
 state. A complete request is idempotent, and only one active operation may
@@ -61,7 +62,7 @@ session, send `notifications/initialized`, and use `tools/list` to obtain the
 current schemas. The available tools are:
 
 - `project_register`, `project_get`, `project_list`
-- `operation_start`, `operation_get`, `operation_wait`, `operation_cancel`
+- `operation_start`, `operation_get`, `operation_wait`, `operation_diagnostics`, `operation_cancel`
 - `conversation_start`, `conversation_send`, `conversation_wait`, `conversation_stop`
 - `session_inventory`, `session_inspect`
 - `initiator_binding_register`, `session_decide`
@@ -92,14 +93,31 @@ current or terminal state by passing its `operation_id`.
 {"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"operation_wait","arguments":{"operation_id":"00000000-0000-4000-8000-000000000002","wait_millis":60000}}}
 ```
 
+While a one-shot operation is running, another MCP client may read its durable
+provider-neutral diagnostic timeline. Pass the highest returned
+`diagnostic_sequence` after reconnecting. The read returns its atomic operation
+snapshot plus events after that cursor, and stops when it sees a new event, a
+terminal operation, or its caller-provided deadline.
+
+```json
+{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"operation_diagnostics","arguments":{"operation_id":"<operation_id returned by operation_start>","after_diagnostic_sequence":0,"wait_millis":60000}}}
+```
+
+The only diagnostic payloads are `provider_retrying` with validated
+`attempt`, `max_retries`, and `retry_delay_ms`, `authentication_failed`, and
+`diagnostic_unclassified`. They are direct-child observations, not inferred
+network, sandbox, or account causes. The tool is unavailable for operations
+created before diagnostic coverage and returns a typed conflict for live
+conversations.
+
 List successful session evidence created by this operator, then register one
 complete initiator identity against an exact evidenced target session. The
 identity key consists of initiator session, initiator agent, role, task, and
 subject; an existing key cannot be silently replaced with another target.
 
 ```json
-{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"session_inventory","arguments":{"project_id":"repository-review"}}}
-{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"initiator_binding_register","arguments":{"project_id":"repository-review","initiator_session_id":"initiator-session","initiator_agent_id":"main","role_id":"review-coordinator","task_id":"release-review","subject_id":"candidate-identity","target_session_id":"00000000-0000-4000-8000-000000000004"}}}
+{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"session_inventory","arguments":{"project_id":"repository-review"}}}
+{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"initiator_binding_register","arguments":{"project_id":"repository-review","initiator_session_id":"initiator-session","initiator_agent_id":"main","role_id":"review-coordinator","task_id":"release-review","subject_id":"candidate-identity","target_session_id":"00000000-0000-4000-8000-000000000004"}}}
 ```
 
 Request a pure continuity decision. `continue_bound` returns `resume_exact`
@@ -108,7 +126,7 @@ only for the exact durable binding; otherwise it returns a typed refusal.
 or mutate bindings.
 
 ```json
-{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"session_decide","arguments":{"project_id":"repository-review","initiator_session_id":"initiator-session","initiator_agent_id":"main","role_id":"review-coordinator","task_id":"release-review","subject_id":"candidate-identity","continuity":"continue_bound"}}}
+{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"session_decide","arguments":{"project_id":"repository-review","initiator_session_id":"initiator-session","initiator_agent_id":"main","role_id":"review-coordinator","task_id":"release-review","subject_id":"candidate-identity","continuity":"continue_bound"}}}
 ```
 
 To continue the exact session, pass the decision's `target_session_id` as the
@@ -117,7 +135,7 @@ daemon passes that UUID directly to Claude with its exact-resume invocation; it
 does not select a nearby session.
 
 ```json
-{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"operation_start","arguments":{"request_id":"00000000-0000-4000-8000-000000000003","project_id":"repository-review","intent":{"kind":"resume_exact","session_id":"00000000-0000-4000-8000-000000000004"},"prompt":"Continue the review using the prior result.","review_profile":"opus_read_only"}}}
+{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"operation_start","arguments":{"request_id":"00000000-0000-4000-8000-000000000003","project_id":"repository-review","intent":{"kind":"resume_exact","session_id":"00000000-0000-4000-8000-000000000004"},"prompt":"Continue the review using the prior result.","review_profile":"opus_read_only"}}}
 ```
 
 Start a live conversation with caller-generated request and turn UUIDs. Each
@@ -131,12 +149,12 @@ After the first wait, reconnect if needed and use its highest event sequence as
 the next cursor (the example uses `6` and then `12` as returned values).
 
 ```json
-{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"conversation_start","arguments":{"request_id":"00000000-0000-4000-8000-000000000010","project_id":"repository-review","intent":{"kind":"new"},"turn_id":"00000000-0000-4000-8000-000000000011","prompt":"Review this change live.","review_profile":"opus_read_only"}}}
-{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"conversation_wait","arguments":{"conversation_id":"<conversation_id returned by conversation_start>","after_sequence":0,"wait_millis":60000}}}
-{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"conversation_send","arguments":{"conversation_id":"<conversation_id returned by conversation_start>","turn_id":"00000000-0000-4000-8000-000000000012","prompt":"Check the error path too."}}}
-{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"conversation_wait","arguments":{"conversation_id":"<conversation_id returned by conversation_start>","after_sequence":6,"wait_millis":60000}}}
-{"jsonrpc":"2.0","id":13,"method":"tools/call","params":{"name":"conversation_stop","arguments":{"conversation_id":"<conversation_id returned by conversation_start>","mode":"graceful"}}}
-{"jsonrpc":"2.0","id":14,"method":"tools/call","params":{"name":"conversation_wait","arguments":{"conversation_id":"<conversation_id returned by conversation_start>","after_sequence":12,"wait_millis":60000}}}
+{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"conversation_start","arguments":{"request_id":"00000000-0000-4000-8000-000000000010","project_id":"repository-review","intent":{"kind":"new"},"turn_id":"00000000-0000-4000-8000-000000000011","prompt":"Review this change live.","review_profile":"opus_read_only"}}}
+{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"conversation_wait","arguments":{"conversation_id":"<conversation_id returned by conversation_start>","after_sequence":0,"wait_millis":60000}}}
+{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"conversation_send","arguments":{"conversation_id":"<conversation_id returned by conversation_start>","turn_id":"00000000-0000-4000-8000-000000000012","prompt":"Check the error path too."}}}
+{"jsonrpc":"2.0","id":13,"method":"tools/call","params":{"name":"conversation_wait","arguments":{"conversation_id":"<conversation_id returned by conversation_start>","after_sequence":6,"wait_millis":60000}}}
+{"jsonrpc":"2.0","id":14,"method":"tools/call","params":{"name":"conversation_stop","arguments":{"conversation_id":"<conversation_id returned by conversation_start>","mode":"graceful"}}}
+{"jsonrpc":"2.0","id":15,"method":"tools/call","params":{"name":"conversation_wait","arguments":{"conversation_id":"<conversation_id returned by conversation_start>","after_sequence":12,"wait_millis":60000}}}
 ```
 
 ## Current boundaries
